@@ -1,5 +1,6 @@
 # Full Size Images for IG v0.0.3
-[![es](https://img.shields.io/badge/lang-es-yellow.svg)](https://github.com/jonatasemidio/multilanguage-readme-pattern/blob/master/README.es.md)
+[![es](https://img.shields.io/badge/lang-es-yellow.svg)](https://github.com/fedeholc/full-size-insta-extension/blob/master/README.es.md)
+
 
 **Google Chrome extension to display IG images at full size.**
 
