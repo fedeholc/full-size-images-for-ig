@@ -1,4 +1,4 @@
-*ignore.md
+*fede_gitignore*
 
 # Logs
 logs
@@ -132,3 +132,4 @@ dist
 .pnp.*
 Full Size Images for Insta.zip
 TODO.md
+full-size-images-for-ig.zip
