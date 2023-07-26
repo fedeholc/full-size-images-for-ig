@@ -1,8 +1,11 @@
 function loadExtension() {
-  const images = document.querySelectorAll("article div img");
+  //Antes:
+  //   const images = document.querySelectorAll("article div img");
+  // ahora (toma también las que están en secuencia y en perfiles)
+  const images = document.querySelectorAll("._aagu img");
 
   images.forEach((image) => {
-    // Dado que el evento de agregar el boton de zoom se dispara
+    // Dado que el evento de agregar el botón de zoom se dispara
     // cada vez que se mueve el mouse, marco como modificada la
     // imagen que ya lo tiene para no repetir.
 
@@ -11,10 +14,11 @@ function loadExtension() {
       image.classList.add("modified");
       console.log(image.alt);
 
-      //solo afecta a las fotos del feed y no videos ni imagenes en otras partes
+      //solo afecta a las fotos del feed y no videos ni imágenes en otras partes
       if (
         image.alt.includes("Photo by") ||
-        image.alt.includes("Photo shared by")
+        image.alt.includes("Photo shared by") ||
+        image.height == 309
       ) {
         let zoomButton = document.createElement("button");
         zoomButton.textContent = "🔍";
@@ -37,7 +41,7 @@ function loadExtension() {
         );
 
         zoomButton.addEventListener("click", (event) => {
-          // esto es para que al mirar imagenes de un perfil y hacer click en el zoom
+          // esto es para que al mirar imágenes de un perfil y hacer click en el zoom
           // se prevenga que se abra el modal de instagram que te muestra la imagen
           event.stopPropagation();
           event.preventDefault();
@@ -47,19 +51,20 @@ function loadExtension() {
           zoomContainer.style.backgroundColor = "black";
           zoomContainer.style.height = "100%";
           zoomContainer.style.width = "100%";
-          zoomContainer.style.zIndex = "5000 !important";
+          zoomContainer.style.zIndex = "999";
           zoomContainer.style.top = "0";
           zoomContainer.style.left = "0";
           zoomContainer.style.position = "fixed";
           zoomContainer.style.display = "flex";
           zoomContainer.style.justifyContent = "center";
+          zoomContainer.classList.add("zoomContainer");
 
           // hace que no se pueda seguir scrolleando cuando se esta viendo la imagen con zoom
           // document.querySelector("body").style.overflowY = "hidden";
           // FIXME: lo quité porque hace que al volver vaya al comienzo del perfil y es molesto
           // si uno quiere ir viendo varias fotos
           // habría que probar si se pueden ocultar y volver a poner las scrollbarse sin que afecte
-          // la posicion de la página
+          // la posición de la página
 
           zoomContainer.addEventListener(
             "click",
@@ -77,10 +82,11 @@ function loadExtension() {
           bigImage.style.maxHeight = "100%";
 
           // para obtener la url de la imagen en grande
-          // como el boton de zoom está dentro de un div y es hermano de la imagen
-          // (pero está despues, es decir, hay un div que tiene primero la img y luego el boton)
-          // hay que ir al padre del boton y seleccionar el primer hijo (la img, y su src)
+          // como el botón de zoom está dentro de un div y es hermano de la imagen
+          // (pero está después, es decir, hay un div que tiene primero la img y luego el botón)
+          // hay que ir al padre del botón y seleccionar el primer hijo (la img, y su src)
           bigImage.src = event.target.parentNode.firstChild.src;
+          bigImage.style.zIndex = "999";
 
           // todo: ponerlo como opción en el popup o settings o combinación tecla
           /* //open image in new tab
