@@ -18,7 +18,7 @@ function loadExtension() {
       if (
         image.alt.includes("Photo by") ||
         image.alt.includes("Photo shared by") ||
-        image.height == 309
+        image.height > 299
       ) {
         let zoomButton = document.createElement("button");
         zoomButton.textContent = "🔍";

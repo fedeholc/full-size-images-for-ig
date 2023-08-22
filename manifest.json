@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Full Size Images for IG",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Extension to display IG images at full size. / Extensión para ver las imágenes de IG a tamaño completo.",
 
   "icons": {

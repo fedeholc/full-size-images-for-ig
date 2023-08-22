@@ -1,4 +1,4 @@
-# Full Size Images for IG v0.0.3
+# Full Size Images for IG v0.0.4
 [![en](https://img.shields.io/badge/lang-en-red.svg)](https://github.com/fedeholc/full-size-insta-extension/blob/master/README.md)
 
 **Extensión de Google Chrome para ver las imágenes de IG a tamaño completo.**
