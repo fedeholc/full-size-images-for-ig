@@ -246,9 +246,16 @@ function findSlides(image) {
 
     // 3. Último recurso: el resto de imágenes grandes del post (descarta
     //    avatares e iconos, que son pequeños).
-    const bigImages = [...post.querySelectorAll("img")].filter(
-      (img) => img === image || (img.width > 149 && getImageSrc(img))
-    );
+    const bigImages = [...post.querySelectorAll("img")].filter((img) => {
+      if (img === image) return true;
+
+      const width =
+        img.width ||
+        img.naturalWidth ||
+        parseInt(img.getAttribute("width") || "0", 10);
+
+      return width > 149 && getImageSrc(img);
+    });
     if (bigImages.length > 1) {
       return { slides: bigImages, root: post };
     }
@@ -413,6 +420,7 @@ function createOverlayState() {
     // modo galería de perfil: { images, hasMore, ... } y loader de páginas
     gallery: null,
     loadMore: null,
+    restoreScroll: null,
   };
 
   overlay = state;
@@ -435,6 +443,7 @@ function openOverlay(anchorImage) {
 // Abre el visor con todas las fotos del perfil.
 function openGalleryOverlay(username) {
   const state = createOverlayState();
+  state.restoreScroll = savePageScroll();
 
   state.loading.textContent = "Cargando galería…";
   state.loading.style.display = "block";
@@ -447,7 +456,7 @@ function openGalleryOverlay(username) {
       state.gallery = gallery;
       state.slides = gallery.images;
       state.index = 0;
-      state.loadMore = () => loadGalleryPage(gallery);
+      state.loadMore = () => loadNextGalleryPage(gallery);
 
       renderCurrentSlide();
     })
@@ -461,8 +470,16 @@ function openGalleryOverlay(username) {
 
 function closeOverlay() {
   if (!overlay) return;
-  overlay.container.remove();
+
+  const { container, gallery, restoreScroll } = overlay;
+
+  // corta cualquier carga de la grilla que esté en curso
+  if (gallery) gallery.cancelled = true;
+
+  container.remove();
   overlay = null;
+
+  restorePageScroll(restoreScroll);
 }
 
 // Vuelve a leer las slides del carrusel, por si Instagram agregó nuevas
@@ -595,7 +612,10 @@ async function navigate(delta) {
   nextIndex = Math.max(0, Math.min(slides.length - 1, nextIndex));
 
   if (nextIndex === state.index) {
-    if (loadingMore) state.loading.style.display = "none";
+    if (loadingMore) {
+      state.loading.style.display = "none";
+      renderCurrentSlide();
+    }
     return;
   }
 
@@ -692,15 +712,18 @@ function imagesFromGraphNode(node) {
   if (Array.isArray(children) && children.length) {
     return children
       .map((edge) => edge && edge.node)
-      .filter((child) => child && !child.is_video && child.display_url)
-      .map((child) => child.display_url);
+      .filter((child) => child && !child.is_video && child.__typename !== "XIGPolarisVideoMedia")
+      .map((child) => child.display_url || child.display_uri)
+      .filter(Boolean);
   }
 
-  if (node.is_video || node.__typename === "GraphVideo") return [];
-  return node.display_url ? [node.display_url] : [];
+  if (node.is_video || /video/i.test(node.__typename || "")) return [];
+
+  const url = node.display_url || node.display_uri;
+  return url ? [url] : [];
 }
 
-function addGalleryImages(gallery, urls) {
+function addGalleryImages(gallery, urls, code = "") {
   let added = 0;
 
   urls.forEach((url) => {
@@ -708,7 +731,7 @@ function addGalleryImages(gallery, urls) {
     if (gallery.images.length >= MAX_GALLERY_IMAGES) return;
 
     gallery.seenUrls.add(url);
-    gallery.images.push({ src: url, alt: "" });
+    gallery.images.push({ src: url, alt: "", code });
     added++;
   });
 
@@ -722,7 +745,14 @@ function addApiPost(gallery, item) {
   if (postId && gallery.seenPosts.has(postId)) return 0;
   if (postId) gallery.seenPosts.add(postId);
 
-  return addGalleryImages(gallery, imagesFromApiItem(item));
+  const code = item.code || item.shortcode || "";
+  if (code && gallery.seenCodes.has(code)) return 0;
+
+  const urls = imagesFromApiItem(item);
+  if (!urls.length) return 0;
+
+  if (code) gallery.seenCodes.add(code);
+  return addGalleryImages(gallery, urls, code);
 }
 
 function addGraphPosts(gallery, edges) {
@@ -732,29 +762,176 @@ function addGraphPosts(gallery, edges) {
     const node = edge && edge.node;
     if (!node) return;
 
-    const postId = String(node.id || node.shortcode || "");
+    const postId = String(node.id || node.pk || node.shortcode || "");
     if (postId && gallery.seenPosts.has(postId)) return;
     if (postId) gallery.seenPosts.add(postId);
 
-    addGalleryImages(gallery, imagesFromGraphNode(node));
+    const code = node.code || node.shortcode || "";
+    if (code && gallery.seenCodes.has(code)) return;
+
+    const urls = imagesFromGraphNode(node);
+    if (!urls.length) return;
+
+    if (code) gallery.seenCodes.add(code);
+    addGalleryImages(gallery, urls, code);
   });
 }
 
-// Último recurso: miniaturas de la grilla que ya están en el DOM (solo la
-// portada de cada post).
-function collectGridImageUrls() {
-  const urls = [];
+function timelineEdgesFromUser(user) {
+  if (!user) return [];
 
-  document
-    .querySelectorAll(
-      'a[href*="/p/"] img, a[href*="/reel/"] img, a[href*="/tv/"] img'
-    )
-    .forEach((img) => {
-      const src = getImageSrc(img);
-      if (src) urls.push(src);
-    });
+  const connection =
+    user.edge_owner_to_timeline_media ||
+    user.polaris_ordered_timeline_connection;
 
-  return [...new Set(urls)];
+  return (connection && connection.edges) || [];
+}
+
+/* Posts del perfil que están en la grilla del DOM. */
+
+const POST_HREF_PATTERN = /\/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/;
+
+function gridPostAnchors() {
+  return [
+    ...document.querySelectorAll(
+      'a[href*="/p/"], a[href*="/reel/"], a[href*="/tv/"]'
+    ),
+  ];
+}
+
+// Agrega a la galería las portadas de los posts que ya están en la grilla.
+function collectGridPosts(gallery) {
+  let added = 0;
+
+  gridPostAnchors().forEach((anchor) => {
+    const match = (anchor.getAttribute("href") || "").match(POST_HREF_PATTERN);
+    if (!match) return;
+
+    const code = match[1];
+    if (!code || gallery.seenCodes.has(code)) return;
+
+    const image = anchor.querySelector("img");
+    const src = image && getImageSrc(image);
+    if (!src) return;
+
+    gallery.seenCodes.add(code);
+    added += addGalleryImages(gallery, [src], code);
+  });
+
+  return added;
+}
+
+function findScrollContainer(element) {
+  let node = element ? element.parentElement : null;
+
+  while (node && node !== document.body && node !== document.documentElement) {
+    const style = window.getComputedStyle(node);
+    if (
+      /(auto|scroll)/.test(style.overflowY) &&
+      node.scrollHeight > node.clientHeight + 1
+    ) {
+      return node;
+    }
+    node = node.parentElement;
+  }
+
+  return null;
+}
+
+function savePageScroll() {
+  const firstAnchor = gridPostAnchors()[0] || null;
+  const container = findScrollContainer(firstAnchor);
+
+  return {
+    windowY: window.scrollY,
+    container,
+    containerTop: container ? container.scrollTop : 0,
+  };
+}
+
+function restorePageScroll(saved) {
+  if (!saved) return;
+
+  try {
+    if (saved.container && saved.container.isConnected) {
+      saved.container.scrollTop = saved.containerTop;
+    }
+    window.scrollTo(0, saved.windowY);
+  } catch (error) {
+    console.warn("Full Size Images for IG:", error);
+  }
+}
+
+// Empuja la página del perfil hacia abajo para que Instagram cargue más posts,
+// igual que cuando el usuario scrollea el feed.
+async function triggerGridLoad(gallery) {
+  const startedAt = Date.now();
+  const before = gridPostAnchors().length;
+  let lastHeight = document.documentElement.scrollHeight;
+  let stableSince = Date.now();
+
+  while (Date.now() - startedAt < 4000) {
+    if (gallery.cancelled) return false;
+
+    const anchors = gridPostAnchors();
+    const last = anchors[anchors.length - 1];
+
+    if (last) {
+      const container = findScrollContainer(last);
+      if (container) container.scrollTop = container.scrollHeight;
+      last.scrollIntoView({ block: "end", inline: "nearest" });
+    }
+
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    window.dispatchEvent(new Event("scroll"));
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    if (gridPostAnchors().length > before) return true;
+
+    // Si la página dejó de crecer, probablemente no hay más posts.
+    const height = document.documentElement.scrollHeight;
+    if (height !== lastHeight) {
+      lastHeight = height;
+      stableSince = Date.now();
+    } else if (Date.now() - stableSince > 2000) {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+function loadMoreGridPage(gallery) {
+  if (!gallery.hasMore || gallery.cancelled) return Promise.resolve(0);
+  if (gallery.gridLoadingPromise) return gallery.gridLoadingPromise;
+
+  gallery.gridLoadingPromise = (async () => {
+    try {
+      let added = collectGridPosts(gallery);
+
+      if (!added) {
+        await triggerGridLoad(gallery);
+        if (gallery.cancelled) return 0;
+        added = collectGridPosts(gallery);
+      }
+
+      if (added > 0) {
+        gallery.emptyGridLoads = 0;
+      } else {
+        gallery.emptyGridLoads += 1;
+
+        // Se intenta un par de veces antes de dar por terminado el perfil.
+        if (gallery.emptyGridLoads >= 2) gallery.hasMore = false;
+      }
+
+      return added;
+    } finally {
+      gallery.gridLoadingPromise = null;
+    }
+  })();
+
+  return gallery.gridLoadingPromise;
 }
 
 // Pide una página más del feed del usuario. Devuelve cuántas imágenes nuevas
@@ -793,15 +970,57 @@ function loadGalleryPage(gallery) {
   return gallery.loadingPromise;
 }
 
+// Carga la página siguiente: por la API de IG si funciona o, si no, scrolleando
+// la grilla del perfil (como hace el feed).
+async function loadNextGalleryPage(gallery) {
+  if (gallery.source === "grid") {
+    return loadMoreGridPage(gallery);
+  }
+
+  try {
+    const added = await loadGalleryPage(gallery);
+
+    if (gallery.cancelled) return 0;
+    if (gallery.hasMore) return added;
+
+    // La API se quedó sin páginas: seguimos con la grilla del perfil.
+    gallery.source = "grid";
+    gallery.hasMore = true;
+
+    const gridAdded = collectGridPosts(gallery);
+    if (gridAdded > 0) return added + gridAdded;
+
+    if (added > 0) return added;
+
+    return loadMoreGridPage(gallery);
+  } catch (error) {
+    console.warn("Full Size Images for IG:", error);
+
+    if (gallery.cancelled) return 0;
+
+    // Si la API dejó de responder, seguimos con la grilla del perfil.
+    gallery.source = "grid";
+    gallery.hasMore = true;
+    collectGridPosts(gallery);
+
+    return loadMoreGridPage(gallery);
+  }
+}
+
 async function createGallery(username) {
   const gallery = {
     images: [],
     seenPosts: new Set(),
+    seenCodes: new Set(),
     seenUrls: new Set(),
     userId: null,
     cursor: "",
     hasMore: false,
     loadingPromise: null,
+    gridLoadingPromise: null,
+    emptyGridLoads: 0,
+    cancelled: false,
+    source: "grid",
   };
 
   let user = null;
@@ -824,28 +1043,33 @@ async function createGallery(username) {
     try {
       const added = await loadGalleryPage(gallery);
       if (!added) throw new Error("La API no devolvió imágenes");
+      gallery.source = "api";
+
+      // Si la API ya no tiene más páginas, completamos con la grilla del
+      // perfil y seguimos cargando por scroll.
+      if (!gallery.hasMore) {
+        gallery.source = "grid";
+        gallery.hasMore = true;
+        collectGridPosts(gallery);
+      }
     } catch (error) {
       console.warn("Full Size Images for IG:", error);
 
-      addGraphPosts(
-        gallery,
-        user.edge_owner_to_timeline_media &&
-          user.edge_owner_to_timeline_media.edges
-      );
-      gallery.hasMore = false;
+      addGraphPosts(gallery, timelineEdgesFromUser(user));
+      gallery.source = "grid";
+      gallery.hasMore = true;
     }
   } else if (user) {
-    addGraphPosts(
-      gallery,
-      user.edge_owner_to_timeline_media &&
-        user.edge_owner_to_timeline_media.edges
-    );
-    gallery.hasMore = false;
+    addGraphPosts(gallery, timelineEdgesFromUser(user));
+    gallery.source = "grid";
+    gallery.hasMore = true;
   }
 
-  if (!gallery.images.length) {
-    addGalleryImages(gallery, collectGridImageUrls());
-    gallery.hasMore = false;
+  // Si la API no sirvió, usamos las portadas de la grilla del perfil y
+  // seguimos cargando más por scroll.
+  if (gallery.source === "grid") {
+    collectGridPosts(gallery);
+    gallery.hasMore = true;
   }
 
   if (!gallery.images.length) {
