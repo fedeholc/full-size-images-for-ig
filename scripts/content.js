@@ -13,6 +13,12 @@ const IG_APP_ID = "936619743392459";
 // tope de seguridad para no cargar perfiles gigantes sin límite
 const MAX_GALLERY_IMAGES = 2000;
 
+// cuántos carruseles siguientes se van precargando mientras se navega
+const GALLERY_PREFETCH_AHEAD = 5;
+
+// máximo de imágenes que se mantienen "calentadas" en la caché del navegador
+const MAX_WARMED_IMAGES = 400;
+
 // rutas de Instagram que no son perfiles de usuario
 const RESERVED_PATHS = new Set([
   "about",
@@ -217,6 +223,33 @@ function getImageSrc(image) {
   return (
     candidates.find((src) => src && !/^(data|blob):/.test(src)) || ""
   );
+}
+
+// Mantiene una caché de imágenes ya pedidas al servidor para que al navegar
+// aparezcan sin esperar. Se guarda una lista acotada para no crecer sin límite.
+const warmedImages = new Set();
+const warmedImageOrder = [];
+const warmedImageRefs = [];
+
+function warmImage(url) {
+  if (!url || warmedImages.has(url)) return;
+
+  warmedImages.add(url);
+  warmedImageOrder.push(url);
+
+  if (warmedImageOrder.length > MAX_WARMED_IMAGES) {
+    const oldest = warmedImageOrder.shift();
+    warmedImages.delete(oldest);
+  }
+
+  const image = new Image();
+  image.decoding = "async";
+  image.src = url;
+
+  // Se mantienen algunas referencias para que el navegador no cancele la
+  // descarga, sin retener demasiadas imágenes decodificadas en memoria.
+  warmedImageRefs.push(image);
+  if (warmedImageRefs.length > 60) warmedImageRefs.shift();
 }
 
 // Busca todas las imágenes que forman parte del mismo post, en orden.
@@ -460,6 +493,13 @@ function openGalleryOverlay(username) {
       state.loadMore = () => loadNextGalleryPage(gallery);
 
       renderCurrentSlide();
+      warmUpcomingSlides(state);
+
+      // Empezamos a precargar los próximos carruseles apenas se abre la
+      // galería. Se espera un instante para no competir con la primera imagen.
+      setTimeout(() => {
+        if (overlay === state) scheduleGalleryPrefetch(state);
+      }, 600);
     })
     .catch((error) => {
       console.warn("Full Size Images for IG:", error);
@@ -602,7 +642,7 @@ async function navigate(delta) {
       state.loading.style.display = "block";
 
       try {
-        await expandCarousel(state.gallery, current);
+        await ensureCarouselExpanded(state.gallery, current);
       } catch (error) {
         console.warn("Full Size Images for IG:", error);
       }
@@ -610,6 +650,7 @@ async function navigate(delta) {
       if (overlay !== state) return;
 
       state.loading.style.display = "none";
+      syncSlidesIndex(state, current);
       slides = getSlidesNow();
       nextIndex = state.index + delta;
     }
@@ -641,6 +682,7 @@ async function navigate(delta) {
       state.loading.style.display = "none";
       renderCurrentSlide();
     }
+    if (state.gallery) scheduleGalleryPrefetch(state);
     return;
   }
 
@@ -663,6 +705,13 @@ async function navigate(delta) {
   state.index = nextIndex;
   renderCurrentSlide();
 
+  // En la galería, adelantar la carga de los próximos carruseles y dejar las
+  // imágenes siguientes en la caché del navegador.
+  if (state.gallery) {
+    warmUpcomingSlides(state);
+    scheduleGalleryPrefetch(state);
+  }
+
   // Precargar la siguiente página cuando faltan pocas imágenes para el final.
   if (state.gallery && galleryHasMore(state) && nextIndex >= slides.length - 3) {
     state
@@ -678,17 +727,33 @@ async function navigate(delta) {
 /* Galería de un perfil                                                */
 /* ------------------------------------------------------------------ */
 
-async function fetchJson(url) {
-  const options = {
+async function fetchJson(url, options = {}) {
+  const { timeout = 15000, ...rest } = options;
+
+  const requestOptions = {
     credentials: "include",
     headers: { "x-ig-app-id": IG_APP_ID },
+    ...rest,
   };
 
   if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) {
-    options.signal = AbortSignal.timeout(15000);
+    const timeoutSignal = AbortSignal.timeout(timeout);
+
+    if (!rest.signal) {
+      requestOptions.signal = timeoutSignal;
+    } else {
+      // Combina la señal del llamador con el timeout.
+      const combined = new AbortController();
+      const abort = () => combined.abort();
+
+      rest.signal.addEventListener("abort", abort);
+      timeoutSignal.addEventListener("abort", abort);
+
+      requestOptions.signal = combined.signal;
+    }
   }
 
-  const response = await fetch(url, options);
+  const response = await fetch(url, requestOptions);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
@@ -748,7 +813,7 @@ function imagesFromGraphNode(node) {
   return url ? [url] : [];
 }
 
-function addGalleryImages(gallery, urls, code = "") {
+function addGalleryImages(gallery, urls, code = "", meta = null) {
   let added = 0;
 
   urls.forEach((url) => {
@@ -756,11 +821,54 @@ function addGalleryImages(gallery, urls, code = "") {
     if (gallery.images.length >= MAX_GALLERY_IMAGES) return;
 
     gallery.seenUrls.add(url);
-    gallery.images.push({ src: url, alt: "", code });
+
+    const slide = { src: url, alt: "", code };
+    if (meta && meta.mediaId) slide.mediaId = meta.mediaId;
+
+    gallery.images.push(slide);
     added++;
   });
 
   return added;
+}
+
+function numericMediaId(value) {
+  const id = String(value || "");
+  return /^\d+$/.test(id) ? id : "";
+}
+
+// Alfabeto que usa Instagram para los shortcodes de los posts.
+const SHORTCODE_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+// Convierte el shortcode de un post ("BjNLpA1AhXM") en el id numérico del
+// media, que es lo que necesita la API interna.
+function mediaIdFromCode(code) {
+  if (!code) return "";
+
+  let id = 0n;
+
+  for (const char of code) {
+    const value = SHORTCODE_ALPHABET.indexOf(char);
+    if (value < 0) return "";
+    id = id * 64n + BigInt(value);
+  }
+
+  return id.toString();
+}
+
+// Los ids de GraphQL vienen en base64 con el formato "<mediaId>_<userId>".
+function mediaIdFromGraphId(value) {
+  const id = String(value || "");
+  if (/^\d+$/.test(id)) return id;
+
+  try {
+    const decoded = atob(id);
+    const match = decoded.match(/^(\d+)/);
+    return match ? match[1] : "";
+  } catch (error) {
+    return "";
+  }
 }
 
 function addApiPost(gallery, item) {
@@ -777,7 +885,8 @@ function addApiPost(gallery, item) {
   if (!urls.length) return 0;
 
   const before = gallery.images.length;
-  const added = addGalleryImages(gallery, urls, code);
+  const mediaId = numericMediaId(item.pk || item.id);
+  const added = addGalleryImages(gallery, urls, code, { mediaId });
 
   // Si es un carrusel y la API solo devolvió la portada, se marca para
   // completarlo después abriendo el post.
@@ -809,7 +918,8 @@ function addGraphPosts(gallery, edges) {
     if (!urls.length) return;
 
     const before = gallery.images.length;
-    const added = addGalleryImages(gallery, urls, code);
+    const mediaId = mediaIdFromGraphId(node.id || node.pk);
+    const added = addGalleryImages(gallery, urls, code, { mediaId });
 
     if ((node.carousel_media_count || 0) > 1 && added <= 1 && added > 0) {
       gallery.images[before].isCarousel = true;
@@ -1036,14 +1146,18 @@ function activeDialogImage(dialog) {
 // Respaldo: si Instagram no dejó los datos del carrusel en un <script>,
 // recorremos el carrusel del modal con su botón "siguiente" leyendo la imagen
 // activa en cada paso.
-async function harvestCarouselFromDialog(dialog) {
+async function harvestCarouselFromDialog(dialog, options = {}) {
   if (!dialog) return [];
 
+  const shouldStop = options.shouldStop || (() => false);
+  const maxSteps = options.maxSteps || 30;
   const urls = [];
   const seen = new Set();
   let previousSrc = "";
 
-  for (let step = 0; step < 30; step += 1) {
+  for (let step = 0; step < maxSteps; step += 1) {
+    if (shouldStop()) break;
+
     const image = activeDialogImage(dialog);
 
     if (image) {
@@ -1067,7 +1181,8 @@ async function harvestCarouselFromDialog(dialog) {
         return src && src !== previousSrc ? src : null;
       },
       2500,
-      150
+      150,
+      shouldStop
     );
 
     if (!changed) break;
@@ -1076,9 +1191,14 @@ async function harvestCarouselFromDialog(dialog) {
   return urls;
 }
 
-async function closeVisibleDialog() {
+async function closeVisibleDialog(targetDialog = null) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const dialog = getVisibleDialog();
+    // Preferimos cerrar exactamente el modal que abrimos, por si había otro
+    // diálogo de Instagram abierto detrás.
+    const dialog =
+      targetDialog && targetDialog.getClientRects().length
+        ? targetDialog
+        : getVisibleDialog();
     if (!dialog) return;
 
     const closeIcon = dialog.querySelector(
@@ -1110,28 +1230,163 @@ async function closeVisibleDialog() {
   }
 }
 
-// Abre el post de Instagram detrás del visor, espera a que cargue la data del
-// carrusel y cierra el modal. Devuelve cuántas imágenes se agregaron.
-async function harvestCarousel(gallery, slide) {
-  slide.expanded = true;
+// Pide los datos del post a la API interna usando el id del media. Es mucho
+// más rápido que abrir el modal y no interfiere con la navegación.
+// Devuelve null si la API no puede resolver el carrusel (entonces se usa el
+// modal como respaldo).
+async function carouselUrlsFromApi(slide, signal) {
+  if (!slide) return null;
 
-  const anchor = findGridAnchorByCode(slide.code);
-  if (!anchor) return 0;
+  // Casi siempre se puede resolver el id a partir del shortcode, incluso para
+  // las portadas que salieron de la grilla del perfil.
+  const mediaId = slide.mediaId || mediaIdFromCode(slide.code);
+  if (!mediaId) return null;
 
-  const originalPath = location.pathname;
-  const originalHistoryLength = history.length;
+  slide.mediaId = mediaId;
 
   try {
-    anchor.click();
+    const data = await fetchJson(`/api/v1/media/${mediaId}/info/`, {
+      signal,
+      timeout: 8000,
+    });
+    const item = data && Array.isArray(data.items) ? data.items[0] : null;
+    if (!item) return null;
 
-    const dialog = await waitForValue(
-      () => getVisibleDialog(),
-      3000,
-      100,
-      () => gallery.cancelled
+    const children = Array.isArray(item.carousel_media)
+      ? item.carousel_media
+      : null;
+
+    if (!children || !children.length) {
+      // Si la API confirma que el post no es un carrusel, no hay nada que
+      // completar. Si dice que sí pero no mandó los hijos, usamos el respaldo.
+      if (typeof item.media_type === "number" && item.media_type !== 8) {
+        return [];
+      }
+      return null;
+    }
+
+    return imagesFromApiItem(item);
+  } catch (error) {
+    return null;
+  }
+}
+
+// Inserta las imágenes del carrusel justo después de su portada y deja las
+// URLs en la caché del navegador.
+function applyCarouselUrls(gallery, slide, urls) {
+  const index = gallery.images.indexOf(slide);
+  if (index < 0) return 0;
+
+  const list = Array.isArray(urls) ? urls : [];
+
+  // La primera imagen reemplaza la portada de la grilla (mejor calidad).
+  if (list[0] && list[0] !== slide.src) {
+    gallery.seenUrls.add(list[0]);
+    slide.src = list[0];
+  }
+
+  const extras = [];
+
+  list.slice(1).forEach((url) => {
+    if (!url || gallery.seenUrls.has(url)) return;
+    if (gallery.images.length >= MAX_GALLERY_IMAGES) return;
+
+    gallery.seenUrls.add(url);
+    extras.push({
+      src: url,
+      alt: "",
+      code: slide.code,
+      mediaId: slide.mediaId || "",
+      isCarousel: false,
+    });
+  });
+
+  if (extras.length) {
+    gallery.images.splice(index + 1, 0, ...extras);
+  }
+
+  slide.isCarousel = false;
+  slide.expanded = true;
+
+  list.forEach(warmImage);
+
+  return extras.length;
+}
+
+// Abre el post de Instagram detrás del visor, espera a que cargue la data del
+// carrusel y cierra el modal. Devuelve cuántas imágenes se agregaron.
+async function harvestCarousel(gallery, slide, options = {}) {
+  const shouldStop = () =>
+    gallery.cancelled ||
+    (!options.foreground && gallery.foregroundHarvestPending > 0);
+
+  // Si hay una navegación en primer plano (o se cerró la galería), se aborta
+  // cualquier pedido en curso para no hacerla esperar.
+  const controller =
+    typeof AbortController !== "undefined" ? new AbortController() : null;
+
+  const stopPolling = setInterval(() => {
+    if (controller && shouldStop()) controller.abort();
+  }, 120);
+
+  let anchorClicked = false;
+  let openedDialog = null;
+  let dialogsBefore = new Set();
+  let originalPath = "";
+  let originalHistoryLength = 0;
+
+  try {
+    // Camino rápido: pedirle los datos del carrusel directamente a la API.
+    const apiUrls = await carouselUrlsFromApi(
+      slide,
+      controller && controller.signal
     );
 
-    if (!dialog || gallery.cancelled) return 0;
+    if (gallery.cancelled) return 0;
+    if (apiUrls) return applyCarouselUrls(gallery, slide, apiUrls);
+
+    if (shouldStop()) return 0;
+
+    const anchor = findGridAnchorByCode(slide.code);
+    if (!anchor) return 0;
+
+    originalPath = location.pathname;
+    originalHistoryLength = history.length;
+    dialogsBefore = new Set(
+      document.querySelectorAll('div[role="dialog"]')
+    );
+    anchorClicked = true;
+
+    anchor.click();
+
+    let dialog = await waitForValue(
+      () => {
+        // Solo nos interesa un modal nuevo (el del post que acabamos de abrir).
+        const visible = [
+          ...document.querySelectorAll('div[role="dialog"]'),
+        ].filter(
+          (candidate) =>
+            candidate.getClientRects().length &&
+            !dialogsBefore.has(candidate)
+        );
+
+        return visible[0] || null;
+      },
+      3000,
+      100,
+      shouldStop
+    );
+
+    // Respaldo por si Instagram reutiliza el mismo nodo del modal: en ese caso
+    // verificamos que la URL ya corresponda al post que abrimos.
+    if (!dialog && !shouldStop()) {
+      const match = location.pathname.match(POST_HREF_PATTERN);
+      if (match && match[1] === slide.code) dialog = getVisibleDialog();
+    }
+
+    if (!dialog || shouldStop()) return 0;
+
+    openedDialog = dialog;
 
     let urls = [];
 
@@ -1139,50 +1394,34 @@ async function harvestCarousel(gallery, slide) {
       () => findCarouselPostData(slide.code),
       1500,
       150,
-      () => gallery.cancelled
+      shouldStop
     );
 
     if (node) urls = imagesFromCarouselPost(node);
-    if (!urls.length) urls = await harvestCarouselFromDialog(dialog);
 
-    if (!urls.length || gallery.cancelled) return 0;
-
-    const index = gallery.images.indexOf(slide);
-    if (index < 0) return 0;
-
-    // La primera imagen reemplaza la portada de la grilla (mejor calidad).
-    if (urls[0] && urls[0] !== slide.src) {
-      gallery.seenUrls.add(urls[0]);
-      slide.src = urls[0];
-    }
-
-    const extras = [];
-
-    urls.slice(1).forEach((url) => {
-      if (!url || gallery.seenUrls.has(url)) return;
-      if (gallery.images.length >= MAX_GALLERY_IMAGES) return;
-
-      gallery.seenUrls.add(url);
-      extras.push({
-        src: url,
-        alt: "",
-        code: slide.code,
-        isCarousel: false,
+    if (!urls.length) {
+      urls = await harvestCarouselFromDialog(dialog, {
+        shouldStop,
+        // En segundo plano no recorremos carruseles enormes.
+        maxSteps: options.foreground ? 30 : 12,
       });
-    });
-
-    if (extras.length) {
-      gallery.images.splice(index + 1, 0, ...extras);
     }
 
-    slide.isCarousel = false;
+    if (!urls.length || shouldStop()) return 0;
 
-    return extras.length;
+    return applyCarouselUrls(gallery, slide, urls);
   } finally {
-    await closeVisibleDialog();
+    clearInterval(stopPolling);
+
+    // Si no detectamos el modal pero tampoco había otro abierto, cerramos
+    // cualquier diálogo visible para no dejarlo colgado.
+    if (openedDialog || (anchorClicked && !dialogsBefore.size)) {
+      await closeVisibleDialog(openedDialog);
+    }
 
     // si el modal agregó una entrada al historial, volvemos al perfil
     if (
+      anchorClicked &&
       originalPath !== location.pathname &&
       /\/(?:p|reel|tv)\//.test(location.pathname) &&
       history.length > originalHistoryLength
@@ -1192,16 +1431,146 @@ async function harvestCarousel(gallery, slide) {
   }
 }
 
-function expandCarousel(gallery, slide) {
+// Instagram solo permite un modal de post a la vez, así que las expansiones se
+// encadenan: la precarga en segundo plano y la carga pedida por el usuario
+// nunca se pisan.
+function expandCarousel(gallery, slide, options = {}) {
   if (!slide || !slide.isCarousel) return Promise.resolve(0);
   if (slide.expansionPromise) return slide.expansionPromise;
   if (slide.expanded) return Promise.resolve(0);
 
-  slide.expansionPromise = harvestCarousel(gallery, slide).finally(() => {
+  const run = () => harvestCarousel(gallery, slide, options);
+  const queued = (gallery.harvestChain || Promise.resolve()).then(run, run);
+
+  gallery.harvestChain = queued.catch(() => {});
+
+  slide.expansionPromise = queued.finally(() => {
     slide.expansionPromise = null;
   });
 
   return slide.expansionPromise;
+}
+
+// Carga el carrusel que el usuario está por abrir, dándole prioridad sobre
+// cualquier precarga que esté en curso.
+async function ensureCarouselExpanded(gallery, slide) {
+  if (!slide || !slide.isCarousel) return 0;
+
+  gallery.foregroundHarvestPending += 1;
+
+  try {
+    if (slide.expansionPromise) {
+      // La precarga en curso se cancela al detectar esta carga prioritaria.
+      await slide.expansionPromise.catch(() => {});
+    }
+
+    if (!slide.isCarousel) return 0;
+
+    return await expandCarousel(gallery, slide, { foreground: true });
+  } finally {
+    gallery.foregroundHarvestPending -= 1;
+  }
+}
+
+// Recalcula el índice actual después de insertar imágenes en el medio.
+function syncSlidesIndex(state, slide) {
+  if (!state || !state.gallery || !slide) return;
+
+  const index = state.gallery.images.indexOf(slide);
+  if (index >= 0) state.index = index;
+}
+
+/* ------------------------------------------------------------------ */
+/* Precarga de los próximos carruseles                                 */
+/* ------------------------------------------------------------------ */
+
+function carouselSlidesAhead(gallery, index, count) {
+  const slides = [];
+
+  // Incluye la imagen actual por si es la portada de un carrusel que todavía
+  // no se abrió: así, cuando el usuario avance, las fotos ya están listas.
+  for (let i = index; i < gallery.images.length; i += 1) {
+    const slide = gallery.images[i];
+    if (!slide || !slide.isCarousel || slide.expanded) continue;
+    if (slide.expansionPromise) continue;
+    if ((slide.prefetchAttempts || 0) >= 1) continue;
+
+    slides.push(slide);
+    if (slides.length >= count) break;
+  }
+
+  return slides;
+}
+
+// Deja cacheadas las próximas imágenes para que al navegar aparezcan rápido.
+function warmUpcomingSlides(state, count = GALLERY_PREFETCH_AHEAD) {
+  if (!state || !state.gallery) return;
+
+  const { images } = state.gallery;
+
+  for (let i = state.index + 1; i < images.length; i += 1) {
+    if (i > state.index + count) break;
+    warmImage(images[i] && images[i].src);
+  }
+}
+
+function scheduleGalleryPrefetch(state) {
+  const gallery = state && state.gallery;
+  if (!gallery || overlay !== state || gallery.cancelled) return;
+
+  if (gallery.prefetchPromise) {
+    gallery.prefetchPending = true;
+    return;
+  }
+
+  gallery.prefetchPromise = runGalleryPrefetch(state)
+    .catch(() => {})
+    .finally(() => {
+      gallery.prefetchPromise = null;
+
+      if (gallery.prefetchPending) {
+        gallery.prefetchPending = false;
+        scheduleGalleryPrefetch(state);
+      }
+    });
+}
+
+async function runGalleryPrefetch(state) {
+  const gallery = state.gallery;
+
+  for (let step = 0; step < GALLERY_PREFETCH_AHEAD; step += 1) {
+    if (overlay !== state || gallery.cancelled) return;
+
+    // Si el usuario pidió una imagen, la precarga espera.
+    if (gallery.foregroundHarvestPending > 0) return;
+
+    // No abrimos modales mientras se está cargando otra página del perfil.
+    if (gallery.loadingPromise || gallery.gridLoadingPromise) return;
+
+    const targets = carouselSlidesAhead(
+      gallery,
+      state.index,
+      GALLERY_PREFETCH_AHEAD
+    );
+    if (!targets.length) return;
+
+    const target = targets[0];
+    const currentSlide = gallery.images[state.index];
+
+    target.prefetchAttempts = (target.prefetchAttempts || 0) + 1;
+
+    try {
+      await expandCarousel(gallery, target);
+    } catch (error) {
+      // la precarga nunca debe interrumpir la navegación
+    }
+
+    if (overlay !== state) return;
+
+    // La inserción de imágenes puede haber corrido el índice actual.
+    syncSlidesIndex(state, currentSlide);
+    warmUpcomingSlides(state);
+  }
 }
 
 function findScrollContainer(element) {
@@ -1404,6 +1773,11 @@ async function createGallery(username) {
     emptyGridLoads: 0,
     cancelled: false,
     source: "grid",
+    // coordinación de la precarga de carruseles
+    harvestChain: Promise.resolve(),
+    prefetchPromise: null,
+    prefetchPending: false,
+    foregroundHarvestPending: 0,
   };
 
   let user = null;
