@@ -478,12 +478,12 @@ function createOverlayState() {
 
   const loading = document.createElement("div");
   loading.className = "fse-loading";
-  loading.textContent = "Cargando…";
+  loading.textContent = "Loading…";
 
   const prevButton = createNavButton(
     "prev",
     "‹",
-    "Imagen anterior (←)",
+    "Previous image (←)",
     "Previous image"
   );
   prevButton.addEventListener("click", (event) => {
@@ -494,7 +494,7 @@ function createOverlayState() {
   const nextButton = createNavButton(
     "next",
     "›",
-    "Imagen siguiente (→)",
+    "Next image (→)",
     "Next image"
   );
   nextButton.addEventListener("click", (event) => {
@@ -506,7 +506,7 @@ function createOverlayState() {
   closeButton.type = "button";
   closeButton.className = "fse-close";
   closeButton.textContent = "✕";
-  closeButton.title = "Cerrar (Esc)";
+  closeButton.title = "Close (Esc)";
   closeButton.setAttribute("aria-label", "Close");
   closeButton.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -520,7 +520,7 @@ function createOverlayState() {
   // Galería del autor del post que se está viendo.
   const continueButton = createOverlayActionButton(
     "Continue in gallery mode",
-    "Continuar en modo galería desde esta imagen",
+    "Continue in gallery mode from this image",
     () => continueInGallery()
   );
 
@@ -753,8 +753,8 @@ function openGalleryOverlay(username, target = null, options = {}) {
   state.loadingGallery = true;
 
   state.loading.textContent = target
-    ? "Cargando galería desde esta imagen…"
-    : "Cargando galería…";
+    ? "Loading gallery from this image…"
+    : "Loading gallery…";
   state.loading.style.display = "block";
   renderCurrentSlide();
 
@@ -799,7 +799,7 @@ function openGalleryOverlay(username, target = null, options = {}) {
       if (overlay !== state) return;
 
       state.loadingGallery = false;
-      state.loading.textContent = "No se pudo cargar la galería";
+      state.loading.textContent = "Could not load the gallery";
     });
 }
 
@@ -827,7 +827,7 @@ async function continueInGallery() {
   let userId = "";
 
   if (target.code) {
-    state.loading.textContent = "Buscando el perfil…";
+    state.loading.textContent = "Finding the profile…";
     state.loading.style.display = "block";
 
     // El usuario que aparece en el DOM puede faltar o ser incorrecto (por
@@ -842,7 +842,7 @@ async function continueInGallery() {
   }
 
   if (!username) {
-    state.loading.textContent = "No se pudo identificar el perfil de la imagen";
+    state.loading.textContent = "Could not identify the profile of this image";
     return;
   }
 
@@ -919,7 +919,7 @@ async function completeTargetCarousel(gallery, target, state) {
 
   if (!cover) return;
 
-  state.loading.textContent = "Cargando carrusel…";
+  state.loading.textContent = "Loading carousel…";
   state.loading.style.display = "block";
 
   try {
@@ -960,7 +960,7 @@ async function resolveGalleryStart(gallery, target, state) {
     attempts < GALLERY_TARGET_SEARCH_PAGES
   ) {
     attempts += 1;
-    state.loading.textContent = "Buscando la imagen…";
+    state.loading.textContent = "Finding the image…";
     state.loading.style.display = "block";
 
     try {
@@ -1111,7 +1111,7 @@ function renderCurrentSlide() {
   // Instagram todavía no cargó esta slide (las imágenes del carrusel se van
   // cargando a medida que se navega). Esperamos a que aparezca el src.
   image.style.visibility = "hidden";
-  loading.textContent = "Cargando…";
+  loading.textContent = "Loading…";
   loading.style.display = "block";
 
   const expectedIndex = state.index;
@@ -1120,7 +1120,7 @@ function renderCurrentSlide() {
     if (!overlay || overlay.index !== expectedIndex) return;
 
     if (!loaded) {
-      loading.textContent = "No se pudo cargar la imagen";
+      loading.textContent = "Could not load the image";
       return;
     }
 
@@ -1149,7 +1149,7 @@ async function navigate(delta) {
     const current = slides[state.index];
 
     if (current && current.isCarousel) {
-      state.loading.textContent = "Cargando carrusel…";
+      state.loading.textContent = "Loading carousel…";
       state.loading.style.display = "block";
 
       try {
@@ -1170,7 +1170,7 @@ async function navigate(delta) {
   // siguiente página de fotos del usuario.
   if (delta > 0 && nextIndex >= slides.length && galleryHasMore(state)) {
     loadingMore = true;
-    state.loading.textContent = "Cargando más fotos…";
+    state.loading.textContent = "Loading more photos…";
     state.loading.style.display = "block";
 
     try {
@@ -2957,7 +2957,7 @@ async function loadFirstGalleryPage(gallery) {
 
   try {
     const added = await loadGalleryPage(gallery);
-    if (!added) throw new Error("La API no devolvió imágenes");
+    if (!added) throw new Error("The API returned no images");
     gallery.source = "api";
     return added;
   } catch (error) {
@@ -3237,7 +3237,7 @@ async function createGallery(username, options = {}) {
 
   if (!gallery.images.length) {
     await restoreProfileNavigation(gallery);
-    throw new Error("No se encontraron imágenes en este perfil");
+    throw new Error("No images were found in this profile");
   }
 
   if (shouldStop()) {
@@ -3281,7 +3281,7 @@ function updateGalleryButton() {
     button.id = GALLERY_BUTTON_ID;
     button.type = "button";
     button.textContent = "View as full size gallery";
-    button.title = "Ver todas las fotos del perfil a tamaño completo";
+    button.title = "View all photos in this profile at full size";
     button.addEventListener("click", () => {
       const currentUsername = getProfileUsername();
       if (currentUsername) openGalleryOverlay(currentUsername);
@@ -3333,7 +3333,7 @@ function loadExtension() {
     zoomButton.type = "button";
     zoomButton.className = "fse-zoom-button";
     zoomButton.textContent = "🔍";
-    zoomButton.title = "Ver a tamaño completo";
+    zoomButton.title = "View at full size";
     zoomButton.setAttribute("aria-label", "View image at full size");
 
     zoomButton.addEventListener("click", (event) => {
