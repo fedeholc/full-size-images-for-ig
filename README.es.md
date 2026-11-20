@@ -1,4 +1,4 @@
-# Full Size Images for IG v0.0.5
+# Full Size Images for IG v0.1.0
 
 [![en](https://img.shields.io/badge/lang-en-red.svg)](https://github.com/fedeholc/full-size-insta-extension/blob/master/README.md)
 
@@ -23,6 +23,10 @@
 Una vez instalada, cuando entres en la web de Instagram, cada imagen tendrá un icono en forma de lupa en la esquina superior derecha. Al hacer click en el icono se abrirá la imagen a tamaño completo. Si haces click en la imagen (o presionas `Esc`), volverás a la pantalla anterior.
 
 Si el post es un carrusel, puedes pasar las imágenes con las flechas izquierda y derecha del teclado, o con las flechas que aparecen en el visor a tamaño completo. Un contador en la esquina indica qué foto estás viendo.
+
+### Galería del perfil
+
+Al entrar al perfil de un usuario (por ejemplo `https://www.instagram.com/rafabadia64/`) aparece un botón **View as full size gallery** en la parte inferior de la pantalla. Al hacer click se abre una galería a tamaño completo con todas las fotos del usuario, en orden: recorre todas las imágenes de cada carrusel y después continúa con el siguiente post. Usa las flechas izquierda y derecha del teclado (o las flechas del visor) para moverte por la galería, y `Esc` para cerrarla. A medida que te acercas al final se van cargando automáticamente más fotos.
 
 Sólo funciona con fotos (tanto del feed principal como del perfil de cada usuario), pero no con vídeos o reels.
 

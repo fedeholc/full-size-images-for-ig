@@ -1,8 +1,52 @@
 // Full Size Images for IG
-// Muestra las imágenes de Instagram a tamaño completo y permite recorrer
-// los carruseles con las flechas del teclado.
+// - Lupa sobre cada foto para verla a tamaño completo (con navegación de
+//   carruseles con las flechas del teclado).
+// - Botón "View as full size gallery" en los perfiles para recorrer todas las
+//   fotos del usuario, incluyendo todas las imágenes de cada carrusel.
 
 const STYLE_ID = "fse-styles";
+const GALLERY_BUTTON_ID = "fse-gallery-button";
+
+// id de la app web de Instagram (necesario para los endpoints internos)
+const IG_APP_ID = "936619743392459";
+
+// tope de seguridad para no cargar perfiles gigantes sin límite
+const MAX_GALLERY_IMAGES = 2000;
+
+// rutas de Instagram que no son perfiles de usuario
+const RESERVED_PATHS = new Set([
+  "about",
+  "accounts",
+  "api",
+  "challenge",
+  "creator",
+  "developer",
+  "direct",
+  "directory",
+  "emails",
+  "embed",
+  "explore",
+  "graphql",
+  "invites",
+  "legal",
+  "lite",
+  "nominate",
+  "oauth",
+  "p",
+  "popular",
+  "press",
+  "privacy",
+  "reel",
+  "reels",
+  "session",
+  "share",
+  "stories",
+  "terms",
+  "topics",
+  "tv",
+  "web",
+  "your_activity",
+]);
 
 // estado del visor a pantalla completa (null si está cerrado)
 let overlay = null;
@@ -34,6 +78,30 @@ function injectStyles() {
     .fse-zoom-button:hover,
     .fse-zoom-button:focus-visible {
       border-color: deeppink !important;
+      outline: none !important;
+    }
+
+    #fse-gallery-button {
+      position: fixed !important;
+      left: 50% !important;
+      bottom: 20px !important;
+      transform: translateX(-50%) !important;
+      z-index: 2147483000 !important;
+      padding: 10px 16px !important;
+      margin: 0 !important;
+      border: 2px solid transparent !important;
+      border-radius: 999px !important;
+      background: #0095f6 !important;
+      color: #fff !important;
+      font: 600 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+      letter-spacing: 0.01em !important;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35) !important;
+      cursor: pointer !important;
+    }
+    #fse-gallery-button:hover,
+    #fse-gallery-button:focus-visible {
+      background: #1877f2 !important;
+      border-color: #fff !important;
       outline: none !important;
     }
 
@@ -261,12 +329,10 @@ function createNavButton(direction, symbol, title, ariaLabel) {
   return button;
 }
 
-function openOverlay(anchorImage) {
+// Crea el visor vacío (sin imágenes) y lo deja como visor activo.
+function createOverlayState() {
   injectStyles();
   closeOverlay();
-
-  const { slides, root } = findSlides(anchorImage);
-  const startIndex = Math.max(0, slides.indexOf(anchorImage));
 
   const container = document.createElement("div");
   container.className = "fse-overlay";
@@ -274,7 +340,6 @@ function openOverlay(anchorImage) {
   const image = document.createElement("img");
   image.className = "fse-image";
   image.draggable = false;
-  image.alt = anchorImage.alt || "";
 
   const counter = document.createElement("div");
   counter.className = "fse-counter";
@@ -335,19 +400,63 @@ function openOverlay(anchorImage) {
 
   document.body.appendChild(container);
 
-  overlay = {
+  const state = {
     container,
     image,
     counter,
     loading,
     prevButton,
     nextButton,
-    slides,
-    root,
-    index: startIndex,
+    slides: [],
+    root: null,
+    index: 0,
+    // modo galería de perfil: { images, hasMore, ... } y loader de páginas
+    gallery: null,
+    loadMore: null,
   };
 
+  overlay = state;
+  return state;
+}
+
+// Abre el visor sobre una imagen del feed/perfil (con su carrusel).
+function openOverlay(anchorImage) {
+  const { slides, root } = findSlides(anchorImage);
+
+  const state = createOverlayState();
+  state.slides = slides;
+  state.root = root;
+  state.index = Math.max(0, slides.indexOf(anchorImage));
+  state.image.alt = anchorImage.alt || "";
+
   renderCurrentSlide();
+}
+
+// Abre el visor con todas las fotos del perfil.
+function openGalleryOverlay(username) {
+  const state = createOverlayState();
+
+  state.loading.textContent = "Cargando galería…";
+  state.loading.style.display = "block";
+  renderCurrentSlide();
+
+  createGallery(username)
+    .then((gallery) => {
+      if (overlay !== state) return;
+
+      state.gallery = gallery;
+      state.slides = gallery.images;
+      state.index = 0;
+      state.loadMore = () => loadGalleryPage(gallery);
+
+      renderCurrentSlide();
+    })
+    .catch((error) => {
+      console.warn("Full Size Images for IG:", error);
+      if (overlay !== state) return;
+
+      state.loading.textContent = "No se pudo cargar la galería";
+    });
 }
 
 function closeOverlay() {
@@ -369,40 +478,64 @@ function getSlidesNow() {
   return overlay.slides;
 }
 
+// Las slides del carrusel son <img> del DOM; las de la galería de perfil son
+// objetos { src, alt }.
+function slideSrc(slide) {
+  if (!slide) return "";
+  if (slide instanceof HTMLImageElement) return getImageSrc(slide);
+  return slide.src || "";
+}
+
+function galleryHasMore(state) {
+  return !!(state.gallery && state.gallery.hasMore);
+}
+
 function renderCurrentSlide() {
   if (!overlay) return;
 
-  const { image, counter, loading, prevButton, nextButton } = overlay;
+  const state = overlay;
+  const { image, counter, loading, prevButton, nextButton } = state;
   const slides = getSlidesNow();
 
   if (!slides.length) {
-    closeOverlay();
+    counter.style.display = "none";
+    prevButton.style.display = "none";
+    nextButton.style.display = "none";
     return;
   }
 
-  if (overlay.index > slides.length - 1) {
-    overlay.index = slides.length - 1;
+  if (state.index > slides.length - 1) {
+    state.index = slides.length - 1;
   }
 
-  const slide = slides[overlay.index];
-  const multiple = slides.length > 1;
+  const hasMore = galleryHasMore(state);
+  const multiple = slides.length > 1 || hasMore;
 
-  counter.textContent = multiple
-    ? `${overlay.index + 1} / ${slides.length}`
-    : "";
-  counter.style.display = multiple ? "block" : "none";
+  if (state.gallery) {
+    counter.textContent = `${state.index + 1} / ${slides.length}${
+      hasMore ? "+" : ""
+    }`;
+    counter.style.display = "block";
+  } else {
+    counter.textContent = multiple
+      ? `${state.index + 1} / ${slides.length}`
+      : "";
+    counter.style.display = multiple ? "block" : "none";
+  }
 
   prevButton.style.display = multiple ? "flex" : "none";
   nextButton.style.display = multiple ? "flex" : "none";
-  prevButton.disabled = overlay.index <= 0;
-  nextButton.disabled = overlay.index >= slides.length - 1;
+  prevButton.disabled = state.index <= 0;
+  nextButton.disabled = state.index >= slides.length - 1 && !hasMore;
 
-  const src = getImageSrc(slide);
+  const slide = slides[state.index];
+  const src = slideSrc(slide);
 
   if (src) {
     loading.style.display = "none";
     image.style.visibility = "visible";
     if (image.src !== src) image.src = src;
+    image.alt = typeof slide.alt === "string" ? slide.alt : "";
     return;
   }
 
@@ -412,7 +545,7 @@ function renderCurrentSlide() {
   loading.textContent = "Cargando…";
   loading.style.display = "block";
 
-  const expectedIndex = overlay.index;
+  const expectedIndex = state.index;
 
   waitForImageSrc(slide).then((loaded) => {
     if (!overlay || overlay.index !== expectedIndex) return;
@@ -430,33 +563,342 @@ function renderCurrentSlide() {
   });
 }
 
-function navigate(delta) {
-  if (!overlay) return;
+async function navigate(delta) {
+  const state = overlay;
+  if (!state) return;
 
-  const slides = getSlidesNow();
-  const nextIndex = Math.min(
-    slides.length - 1,
-    Math.max(0, overlay.index + delta)
-  );
+  let slides = getSlidesNow();
+  if (!slides.length) return;
 
-  if (nextIndex === overlay.index) return;
+  let nextIndex = state.index + delta;
+  let loadingMore = false;
 
-  // Mantiene sincronizado el carrusel de Instagram.
-  const igButton = findIgNavButton(
-    overlay.root,
-    delta > 0 ? "next" : "prev"
-  );
+  // En la galería del perfil: si llegamos al final de lo cargado, traemos la
+  // siguiente página de fotos del usuario.
+  if (delta > 0 && nextIndex >= slides.length && galleryHasMore(state)) {
+    loadingMore = true;
+    state.loading.textContent = "Cargando más fotos…";
+    state.loading.style.display = "block";
 
-  if (igButton && !igButton.disabled) {
     try {
-      igButton.click();
+      await state.loadMore();
     } catch (error) {
       console.warn("Full Size Images for IG:", error);
     }
+
+    if (overlay !== state) return;
+
+    slides = getSlidesNow();
+    nextIndex = Math.min(slides.length - 1, nextIndex);
   }
 
-  overlay.index = nextIndex;
+  nextIndex = Math.max(0, Math.min(slides.length - 1, nextIndex));
+
+  if (nextIndex === state.index) {
+    if (loadingMore) state.loading.style.display = "none";
+    return;
+  }
+
+  // En modo carrusel, mantener sincronizado el carrusel de Instagram.
+  if (!state.gallery) {
+    const igButton = findIgNavButton(
+      state.root,
+      delta > 0 ? "next" : "prev"
+    );
+
+    if (igButton && !igButton.disabled) {
+      try {
+        igButton.click();
+      } catch (error) {
+        console.warn("Full Size Images for IG:", error);
+      }
+    }
+  }
+
+  state.index = nextIndex;
   renderCurrentSlide();
+
+  // Precargar la siguiente página cuando faltan pocas imágenes para el final.
+  if (state.gallery && galleryHasMore(state) && nextIndex >= slides.length - 3) {
+    state
+      .loadMore()
+      .then(() => {
+        if (overlay === state) renderCurrentSlide();
+      })
+      .catch(() => {});
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Galería de un perfil                                                */
+/* ------------------------------------------------------------------ */
+
+async function fetchJson(url) {
+  const options = {
+    credentials: "include",
+    headers: { "x-ig-app-id": IG_APP_ID },
+  };
+
+  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) {
+    options.signal = AbortSignal.timeout(15000);
+  }
+
+  const response = await fetch(url, options);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+function bestImageUrl(candidates) {
+  if (!Array.isArray(candidates) || !candidates.length) return "";
+
+  const best = candidates.reduce((currentBest, candidate) => {
+    const area = (item) => (item.width || 0) * (item.height || 0);
+    return area(candidate) > area(currentBest) ? candidate : currentBest;
+  }, candidates[0]);
+
+  return best.url || "";
+}
+
+// Extrae las fotos (no videos) de un item de la API mobile.
+function imagesFromApiItem(item) {
+  if (!item) return [];
+
+  if (Array.isArray(item.carousel_media) && item.carousel_media.length) {
+    return item.carousel_media
+      .filter((media) => media && media.media_type === 1)
+      .map((media) =>
+        bestImageUrl(
+          media.image_versions2 && media.image_versions2.candidates
+        )
+      )
+      .filter(Boolean);
+  }
+
+  if (item.media_type !== 1) return [];
+
+  const url = bestImageUrl(
+    item.image_versions2 && item.image_versions2.candidates
+  );
+  return url ? [url] : [];
+}
+
+// Extrae las fotos (no videos) de un nodo GraphQL (web_profile_info).
+function imagesFromGraphNode(node) {
+  if (!node) return [];
+
+  const children =
+    node.edge_sidecar_to_children && node.edge_sidecar_to_children.edges;
+
+  if (Array.isArray(children) && children.length) {
+    return children
+      .map((edge) => edge && edge.node)
+      .filter((child) => child && !child.is_video && child.display_url)
+      .map((child) => child.display_url);
+  }
+
+  if (node.is_video || node.__typename === "GraphVideo") return [];
+  return node.display_url ? [node.display_url] : [];
+}
+
+function addGalleryImages(gallery, urls) {
+  let added = 0;
+
+  urls.forEach((url) => {
+    if (!url || gallery.seenUrls.has(url)) return;
+    if (gallery.images.length >= MAX_GALLERY_IMAGES) return;
+
+    gallery.seenUrls.add(url);
+    gallery.images.push({ src: url, alt: "" });
+    added++;
+  });
+
+  return added;
+}
+
+function addApiPost(gallery, item) {
+  if (!item) return 0;
+
+  const postId = String(item.pk || item.id || "");
+  if (postId && gallery.seenPosts.has(postId)) return 0;
+  if (postId) gallery.seenPosts.add(postId);
+
+  return addGalleryImages(gallery, imagesFromApiItem(item));
+}
+
+function addGraphPosts(gallery, edges) {
+  if (!Array.isArray(edges)) return;
+
+  edges.forEach((edge) => {
+    const node = edge && edge.node;
+    if (!node) return;
+
+    const postId = String(node.id || node.shortcode || "");
+    if (postId && gallery.seenPosts.has(postId)) return;
+    if (postId) gallery.seenPosts.add(postId);
+
+    addGalleryImages(gallery, imagesFromGraphNode(node));
+  });
+}
+
+// Último recurso: miniaturas de la grilla que ya están en el DOM (solo la
+// portada de cada post).
+function collectGridImageUrls() {
+  const urls = [];
+
+  document
+    .querySelectorAll(
+      'a[href*="/p/"] img, a[href*="/reel/"] img, a[href*="/tv/"] img'
+    )
+    .forEach((img) => {
+      const src = getImageSrc(img);
+      if (src) urls.push(src);
+    });
+
+  return [...new Set(urls)];
+}
+
+// Pide una página más del feed del usuario. Devuelve cuántas imágenes nuevas
+// se agregaron.
+function loadGalleryPage(gallery) {
+  if (!gallery.userId || !gallery.hasMore) return Promise.resolve(0);
+  if (gallery.loadingPromise) return gallery.loadingPromise;
+
+  gallery.loadingPromise = (async () => {
+    try {
+      const cursor = gallery.cursor
+        ? `&max_id=${encodeURIComponent(gallery.cursor)}`
+        : "";
+      const data = await fetchJson(
+        `/api/v1/feed/user/${gallery.userId}/?count=33${cursor}`
+      );
+      const items = data && Array.isArray(data.items) ? data.items : [];
+
+      let added = 0;
+      items.forEach((item) => {
+        added += addApiPost(gallery, item);
+      });
+
+      gallery.cursor = data && data.next_max_id ? String(data.next_max_id) : "";
+      gallery.hasMore =
+        !!(data && data.more_available) &&
+        !!gallery.cursor &&
+        gallery.images.length < MAX_GALLERY_IMAGES;
+
+      return added;
+    } finally {
+      gallery.loadingPromise = null;
+    }
+  })();
+
+  return gallery.loadingPromise;
+}
+
+async function createGallery(username) {
+  const gallery = {
+    images: [],
+    seenPosts: new Set(),
+    seenUrls: new Set(),
+    userId: null,
+    cursor: "",
+    hasMore: false,
+    loadingPromise: null,
+  };
+
+  let user = null;
+
+  try {
+    const data = await fetchJson(
+      `/api/v1/users/web_profile_info/?username=${encodeURIComponent(
+        username
+      )}`
+    );
+    user = data && data.data ? data.data.user : null;
+  } catch (error) {
+    console.warn("Full Size Images for IG:", error);
+  }
+
+  if (user && user.id) {
+    gallery.userId = user.id;
+    gallery.hasMore = true;
+
+    try {
+      const added = await loadGalleryPage(gallery);
+      if (!added) throw new Error("La API no devolvió imágenes");
+    } catch (error) {
+      console.warn("Full Size Images for IG:", error);
+
+      addGraphPosts(
+        gallery,
+        user.edge_owner_to_timeline_media &&
+          user.edge_owner_to_timeline_media.edges
+      );
+      gallery.hasMore = false;
+    }
+  } else if (user) {
+    addGraphPosts(
+      gallery,
+      user.edge_owner_to_timeline_media &&
+        user.edge_owner_to_timeline_media.edges
+    );
+    gallery.hasMore = false;
+  }
+
+  if (!gallery.images.length) {
+    addGalleryImages(gallery, collectGridImageUrls());
+    gallery.hasMore = false;
+  }
+
+  if (!gallery.images.length) {
+    throw new Error("No se encontraron imágenes en este perfil");
+  }
+
+  return gallery;
+}
+
+/* ------------------------------------------------------------------ */
+/* Botón de galería en los perfiles                                    */
+/* ------------------------------------------------------------------ */
+
+function getProfileUsername() {
+  const match = location.pathname.match(/^\/([A-Za-z0-9._]{1,30})\/?$/);
+  if (!match) return "";
+
+  const username = match[1];
+  return RESERVED_PATHS.has(username.toLowerCase()) ? "" : username;
+}
+
+function updateGalleryButton() {
+  const username = getProfileUsername();
+  let button = document.getElementById(GALLERY_BUTTON_ID);
+
+  if (!username) {
+    if (button) button.remove();
+    return;
+  }
+
+  if (!button) {
+    injectStyles();
+
+    button = document.createElement("button");
+    button.id = GALLERY_BUTTON_ID;
+    button.type = "button";
+    button.textContent = "View as full size gallery";
+    button.title = "Ver todas las fotos del perfil a tamaño completo";
+    button.addEventListener("click", () => {
+      const currentUsername = getProfileUsername();
+      if (currentUsername) openGalleryOverlay(currentUsername);
+    });
+
+    document.body.appendChild(button);
+  }
+
+  // Instagram es una SPA: al cambiar de perfil se actualiza el usuario.
+  button.dataset.username = username;
+
+  // no mostrar el botón encima de los modales de Instagram ni del visor
+  const dialog = document.querySelector('div[role="dialog"]');
+  const dialogOpen = !!(dialog && dialog.getClientRects().length);
+  button.style.display = dialogOpen || overlay ? "none" : "block";
 }
 
 /* ------------------------------------------------------------------ */
@@ -510,9 +952,9 @@ function loadExtension() {
   });
 }
 
-// Flechas del teclado: pasan las imágenes del carrusel y Esc cierra el visor.
-// Se escucha en window/captura para que Instagram no procese las teclas
-// (por ejemplo, para que no cambie de post al mismo tiempo).
+// Flechas del teclado: pasan las imágenes del carrusel/galería y Esc cierra
+// el visor. Se escucha en window/captura para que Instagram no procese las
+// teclas (por ejemplo, para que no cambie de post al mismo tiempo).
 window.addEventListener(
   "keydown",
   (event) => {
@@ -552,3 +994,8 @@ function scheduleLoadExtension() {
 
 document.addEventListener("mousemove", scheduleLoadExtension);
 document.addEventListener("scroll", scheduleLoadExtension, { capture: true });
+
+// El botón de galería se revisa periódicamente porque Instagram es una SPA
+// (la URL cambia sin recargar la página).
+setInterval(updateGalleryButton, 1000);
+updateGalleryButton();
