@@ -1,4 +1,4 @@
-# Full Size Images for IG v0.1.1
+# Full Size Images for IG v0.2.0
 
 [![es](https://img.shields.io/badge/lang-es-yellow.svg)](https://github.com/fedeholc/full-size-insta-extension/blob/master/README.es.md)
 
@@ -28,7 +28,7 @@ If the post is a carousel, you can move through its images with the left and rig
 
 When you open a user's profile (for example `https://www.instagram.com/rafabadia64/`), a **View as full size gallery** button appears at the bottom of the screen. Clicking it opens a full size gallery with all the user's photos, in order: the viewer goes through every image of each carousel and then continues with the next post. Use the left and right arrow keys (or the on-screen arrows) to move through the gallery, and `Esc` to close it.
 
-More photos are loaded automatically as you approach the end of the gallery. If Instagram does not expose the complete data of a profile, the gallery uses the photos available on the profile grid and keeps loading more of them by scrolling the profile in the background (the scroll position is restored when you close the gallery).
+More photos are loaded automatically as you approach the end of the gallery. If Instagram does not expose the complete data of a profile, the gallery uses the photos available on the profile grid and keeps loading more of them by scrolling the profile in the background (the scroll position is restored when you close the gallery). When a carousel appears only with its cover photo in the grid, the extension opens the post in the background (hidden behind the viewer) to get the rest of its images.
 
 It works only with photos (both from the main feed and from each user's profile), but not with videos or reels.
 
