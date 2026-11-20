@@ -3,6 +3,8 @@
 //   carruseles con las flechas del teclado).
 // - Botón "View as full size gallery" en los perfiles para recorrer todas las
 //   fotos del usuario, incluyendo todas las imágenes de cada carrusel.
+// - En el visor individual, botón "Continue in gallery mode" para pasar a la
+//   galería del autor desde la imagen que se está viendo.
 
 const STYLE_ID = "fse-styles";
 const GALLERY_BUTTON_ID = "fse-gallery-button";
@@ -18,6 +20,9 @@ const GALLERY_PREFETCH_AHEAD = 5;
 
 // máximo de imágenes que se mantienen "calentadas" en la caché del navegador
 const MAX_WARMED_IMAGES = 400;
+
+// páginas extra que se buscan para ubicar el post al continuar en la galería
+const GALLERY_TARGET_SEARCH_PAGES = 5;
 
 // rutas de Instagram que no son perfiles de usuario
 const RESERVED_PATHS = new Set([
@@ -190,6 +195,31 @@ function injectStyles() {
       right: 12px !important;
       font-size: 20px !important;
     }
+
+    .fse-overlay .fse-continue {
+      position: absolute !important;
+      left: 50% !important;
+      bottom: 22px !important;
+      transform: translateX(-50%) !important;
+      z-index: 2 !important;
+      padding: 10px 16px !important;
+      margin: 0 !important;
+      border: 2px solid transparent !important;
+      border-radius: 999px !important;
+      background: #0095f6 !important;
+      color: #fff !important;
+      font: 600 13px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+      letter-spacing: 0.01em !important;
+      white-space: nowrap !important;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35) !important;
+      cursor: pointer !important;
+    }
+    .fse-overlay .fse-continue:hover,
+    .fse-overlay .fse-continue:focus-visible {
+      background: #1877f2 !important;
+      border-color: #fff !important;
+      outline: none !important;
+    }
   `;
 
   document.head.appendChild(style);
@@ -223,6 +253,29 @@ function getImageSrc(image) {
   return (
     candidates.find((src) => src && !/^(data|blob):/.test(src)) || ""
   );
+}
+
+// Variante de getImageSrc que prioriza la resolución más grande del srcset
+// (útil para reconocer la misma imagen dentro de la galería).
+function getBestImageSrc(image) {
+  if (!image) return "";
+
+  const srcset = image.getAttribute("srcset") || "";
+  let bestFromSrcset = "";
+  let bestSize = -1;
+
+  srcset.split(",").forEach((entry) => {
+    const [url, descriptor] = entry.trim().split(/\s+/);
+    if (!url) return;
+
+    const size = descriptor ? parseFloat(descriptor) : 1;
+    if (size > bestSize) {
+      bestSize = size;
+      bestFromSrcset = url;
+    }
+  });
+
+  return bestFromSrcset || getImageSrc(image);
 }
 
 // Mantiene una caché de imágenes ya pedidas al servidor para que al navegar
@@ -422,13 +475,26 @@ function createOverlayState() {
     closeOverlay();
   });
 
+  const continueButton = document.createElement("button");
+  continueButton.type = "button";
+  continueButton.className = "fse-continue";
+  continueButton.textContent = "Continue in gallery mode";
+  continueButton.title = "Continuar en modo galería desde esta imagen";
+  continueButton.setAttribute("aria-label", "Continue in gallery mode");
+  continueButton.style.display = "none";
+  continueButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    continueInGallery();
+  });
+
   container.append(
     image,
     counter,
     loading,
     prevButton,
     nextButton,
-    closeButton
+    closeButton,
+    continueButton
   );
 
   // al hacer click en cualquier lado (menos en los botones) se cierra
@@ -448,6 +514,7 @@ function createOverlayState() {
     loading,
     prevButton,
     nextButton,
+    continueButton,
     slides: [],
     root: null,
     index: 0,
@@ -455,6 +522,13 @@ function createOverlayState() {
     gallery: null,
     loadMore: null,
     restoreScroll: null,
+    // datos del post para el botón "Continue in gallery mode"
+    continueTarget: null,
+    // lista completa del carrusel obtenida de la API (si el DOM viene parcial)
+    useApiSlides: false,
+    mayBeCarousel: false,
+    // evita navegar mientras se está preparando la galería
+    loadingGallery: false,
   };
 
   overlay = state;
@@ -470,28 +544,190 @@ function openOverlay(anchorImage) {
   state.root = root;
   state.index = Math.max(0, slides.indexOf(anchorImage));
   state.image.alt = anchorImage.alt || "";
+  state.continueTarget = galleryTargetFromImage(anchorImage);
 
+  // Puede ser un carrusel aunque el DOM solo muestre una parte (o solo la
+  // portada, en el caso de una tarjeta de la grilla).
+  const postAnchor = anchorImage.closest(
+    'a[href*="/p/"], a[href*="/reel/"], a[href*="/tv/"]'
+  );
+  const ownList = anchorImage.closest("ul");
+  const listItems = ownList ? ownList.querySelectorAll("li").length : 0;
+
+  state.mayBeCarousel =
+    slides.length > 1 ||
+    listItems > 1 ||
+    !!(postAnchor && isCarouselTile(postAnchor));
+
+  renderCurrentSlide();
+
+  // El DOM de Instagram a veces solo tiene cargadas algunas imágenes del
+  // carrusel; completamos la lista con los datos del post.
+  completeOverlayCarousel(state).catch(() => {});
+}
+
+/* ------------------------------------------------------------------ */
+/* Contexto del post para continuar en la galería                      */
+/* ------------------------------------------------------------------ */
+
+function profileUsernameFromHref(href) {
+  if (!href) return "";
+
+  try {
+    const path = new URL(href, location.origin).pathname;
+    const match = path.match(/^\/([A-Za-z0-9._]{1,30})\/?$/);
+    if (!match) return "";
+
+    const username = match[1];
+    return RESERVED_PATHS.has(username.toLowerCase()) ? "" : username;
+  } catch (error) {
+    return "";
+  }
+}
+
+// Busca el autor del post en el encabezado (o, si no, en el texto alternativo
+// de la imagen). En la grilla del perfil usa directamente el perfil actual.
+function postUsernameFromElement(container, image) {
+  if (container) {
+    const scope = container.querySelector("header") || container;
+
+    for (const link of scope.querySelectorAll("a[href]")) {
+      const username = profileUsernameFromHref(link.getAttribute("href"));
+      if (username) return username;
+    }
+  }
+
+  const profile = getProfileUsername();
+  if (profile) return profile;
+
+  const alt = (image && image.alt) || "";
+  const match = alt.match(
+    /(?:Photo(?:\s+shared)?\s+by|Foto(?:\s+compartida)?\s+(?:de|por))\s+@?([A-Za-z0-9._]+)/i
+  );
+
+  return match ? match[1] : "";
+}
+
+function postCodeFromElement(container, image) {
+  const fromUrl = location.pathname.match(POST_HREF_PATTERN);
+  if (fromUrl) return fromUrl[1];
+
+  const anchor =
+    (image &&
+      image.closest('a[href*="/p/"], a[href*="/reel/"], a[href*="/tv/"]')) ||
+    (container &&
+      container.querySelector(
+        'a[href*="/p/"], a[href*="/reel/"], a[href*="/tv/"]'
+      ));
+
+  const href = anchor && anchor.getAttribute("href");
+  const match = href && href.match(POST_HREF_PATTERN);
+  return match ? match[1] : "";
+}
+
+// Datos necesarios para abrir la galería del autor en la imagen que se está
+// viendo (y para completar el carrusel desde la API).
+function galleryTargetFromImage(image) {
+  if (!image) return null;
+
+  const container =
+    image.closest("article") || image.closest('[role="dialog"]') || null;
+
+  const username = postUsernameFromElement(container, image);
+  const code = postCodeFromElement(container, image);
+
+  if (!username && !code) return null;
+
+  return { username, code };
+}
+
+// Ubica la imagen actual del DOM dentro de la lista completa de la API.
+// Instagram puede montar solo una ventana de slides, así que probamos con qué
+// desplazamiento se alinean mejor las URLs conocidas.
+function apiIndexForOverlaySlides(domSlides, urls, currentIndex) {
+  const apiKeys = urls.map((url) => imageUrlKey(url));
+  let bestOffset = -1;
+  let bestScore = 0;
+
+  for (
+    let offset = 0;
+    offset + domSlides.length <= apiKeys.length;
+    offset += 1
+  ) {
+    let score = 0;
+
+    for (let i = 0; i < domSlides.length; i += 1) {
+      const key = imageUrlKey(slideSrc(domSlides[i]));
+      if (key && key === apiKeys[offset + i]) score += 1;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestOffset = offset;
+    }
+  }
+
+  if (bestOffset >= 0 && bestScore > 0) {
+    return Math.min(bestOffset + currentIndex, urls.length - 1);
+  }
+
+  return Math.min(currentIndex, urls.length - 1);
+}
+
+// Completa las slides de un carrusel cuando Instagram todavía no cargó todas
+// las imágenes en el DOM (por ejemplo, muestra 4 de 8).
+async function completeOverlayCarousel(state) {
+  const target = state.continueTarget;
+  if (!target || !target.code) return;
+  if (state.gallery || !state.mayBeCarousel) return;
+
+  const urls = await carouselUrlsFromApi({ code: target.code });
+  if (!urls || urls.length <= 1) return;
+  if (overlay !== state) return;
+
+  const liveSlides = getSlidesNow();
+  if (!liveSlides.length || urls.length <= liveSlides.length) return;
+
+  const index = apiIndexForOverlaySlides(liveSlides, urls, state.index);
+
+  state.slides = urls.map((url) => ({
+    src: url,
+    alt: "",
+    code: target.code,
+  }));
+  state.useApiSlides = true;
+  state.index = index;
+
+  urls.forEach(warmImage);
   renderCurrentSlide();
 }
 
-// Abre el visor con todas las fotos del perfil.
-function openGalleryOverlay(username) {
+// Abre el visor con todas las fotos del perfil. Si recibe un `target`
+// ({ code, offset, src }), arranca en esa imagen en lugar del principio.
+function openGalleryOverlay(username, target = null) {
   const state = createOverlayState();
   state.restoreScroll = savePageScroll();
+  state.loadingGallery = true;
 
-  state.loading.textContent = "Cargando galería…";
+  state.loading.textContent = target
+    ? "Cargando galería desde esta imagen…"
+    : "Cargando galería…";
   state.loading.style.display = "block";
   renderCurrentSlide();
 
   createGallery(username)
-    .then((gallery) => {
+    .then(async (gallery) => {
       if (overlay !== state) return;
 
       state.gallery = gallery;
       state.slides = gallery.images;
-      state.index = 0;
       state.loadMore = () => loadNextGalleryPage(gallery);
+      state.index = await resolveGalleryStart(gallery, target, state);
 
+      if (overlay !== state) return;
+
+      state.loadingGallery = false;
+      state.loading.style.display = "none";
       renderCurrentSlide();
       warmUpcomingSlides(state);
 
@@ -505,8 +741,166 @@ function openGalleryOverlay(username) {
       console.warn("Full Size Images for IG:", error);
       if (overlay !== state) return;
 
+      state.loadingGallery = false;
       state.loading.textContent = "No se pudo cargar la galería";
     });
+}
+
+// Pasa del visor individual al modo galería, empezando por la imagen actual.
+function continueInGallery() {
+  const state = overlay;
+  if (!state || state.gallery || !state.continueTarget) return;
+
+  const username = state.continueTarget.username;
+  if (!username) return;
+
+  const slides = getSlidesNow();
+  const current = slides[state.index];
+
+  openGalleryOverlay(username, {
+    code: state.continueTarget.code,
+    offset: state.index,
+    src:
+      current instanceof HTMLImageElement
+        ? getBestImageSrc(current)
+        : slideSrc(current),
+  });
+}
+
+function imageUrlKey(url) {
+  const clean = String(url || "").split("?")[0].split("#")[0];
+  const parts = clean.split("/");
+
+  // El nombre de archivo identifica la imagen aunque cambie la resolución
+  // (Instagram usa el mismo nombre para las distintas versiones).
+  return parts[parts.length - 1] || clean;
+}
+
+function sameImageUrl(a, b) {
+  const keyA = imageUrlKey(a);
+  const keyB = imageUrlKey(b);
+  return !!keyA && keyA === keyB;
+}
+
+// Índices de la galería que pertenecen al mismo post (portada + carrusel).
+function galleryTargetGroup(gallery, code) {
+  const group = [];
+  if (!code) return group;
+
+  gallery.images.forEach((slide, index) => {
+    if (slide.code === code) group.push(index);
+  });
+
+  return group;
+}
+
+function galleryIndexForTarget(gallery, target) {
+  if (!target) return -1;
+
+  if (target.code) {
+    const group = galleryTargetGroup(gallery, target.code);
+
+    if (group.length) {
+      // Primero intentamos la misma URL; si no, usamos la posición dentro del
+      // carrusel (el botón aparece en la última imagen del post).
+      const bySrc = group.find((index) =>
+        sameImageUrl(gallery.images[index].src, target.src)
+      );
+
+      if (bySrc !== undefined) return bySrc;
+
+      const offset = Math.max(0, target.offset || 0);
+      return group[Math.min(offset, group.length - 1)];
+    }
+  }
+
+  if (target.src) {
+    const index = gallery.images.findIndex((slide) =>
+      sameImageUrl(slide.src, target.src)
+    );
+
+    if (index >= 0) return index;
+  }
+
+  return -1;
+}
+
+// Si de la galería solo teníamos la portada del carrusel, lo completamos para
+// poder ubicar la imagen exacta en la que estaba el usuario.
+async function completeTargetCarousel(gallery, target, state) {
+  if (!target || !target.code) return;
+
+  const group = galleryTargetGroup(gallery, target.code);
+  const cover = group
+    .map((index) => gallery.images[index])
+    .find((slide) => slide && slide.isCarousel);
+
+  if (!cover) return;
+
+  state.loading.textContent = "Cargando carrusel…";
+  state.loading.style.display = "block";
+
+  try {
+    await expandCarousel(gallery, cover);
+  } catch (error) {
+    // si falla, seguimos con la portada
+  }
+}
+
+// Si el post no aparece en las páginas cargadas (por ejemplo, una foto vieja
+// abierta desde el feed), la agregamos al principio para poder empezar en ella.
+function prependTargetImage(gallery, target) {
+  if (!target || !target.code || !target.src) return -1;
+  if (gallery.images.length >= MAX_GALLERY_IMAGES) return -1;
+
+  gallery.seenUrls.add(target.src);
+  gallery.images.unshift({
+    src: target.src,
+    alt: "",
+    code: target.code,
+    isCarousel: false,
+  });
+
+  return 0;
+}
+
+async function resolveGalleryStart(gallery, target, state) {
+  if (!target) return 0;
+
+  let index = galleryIndexForTarget(gallery, target);
+  let attempts = 0;
+
+  // El post puede estar en una página siguiente de la API: buscamos un poco.
+  while (
+    index < 0 &&
+    gallery.hasMore &&
+    gallery.source === "api" &&
+    attempts < GALLERY_TARGET_SEARCH_PAGES
+  ) {
+    attempts += 1;
+    state.loading.textContent = "Buscando la imagen…";
+    state.loading.style.display = "block";
+
+    try {
+      await loadNextGalleryPage(gallery);
+    } catch (error) {
+      break;
+    }
+
+    if (overlay !== state) return 0;
+    index = galleryIndexForTarget(gallery, target);
+  }
+
+  if (index < 0) index = prependTargetImage(gallery, target);
+
+  if (index >= 0) {
+    await completeTargetCarousel(gallery, target, state);
+    if (overlay !== state) return 0;
+
+    index = galleryIndexForTarget(gallery, target);
+  }
+
+  return index >= 0 ? index : 0;
 }
 
 function closeOverlay() {
@@ -527,6 +921,8 @@ function closeOverlay() {
 // imágenes mientras se navega.
 function getSlidesNow() {
   if (!overlay) return [];
+
+  if (overlay.useApiSlides) return overlay.slides;
 
   if (overlay.root && overlay.root.tagName === "UL") {
     const fresh = [...overlay.root.querySelectorAll("li img")];
@@ -552,19 +948,33 @@ function renderCurrentSlide() {
   if (!overlay) return;
 
   const state = overlay;
-  const { image, counter, loading, prevButton, nextButton } = state;
+  const { image, counter, loading, prevButton, nextButton, continueButton } =
+    state;
   const slides = getSlidesNow();
 
   if (!slides.length) {
     counter.style.display = "none";
     prevButton.style.display = "none";
     nextButton.style.display = "none";
+    continueButton.style.display = "none";
     return;
   }
 
   if (state.index > slides.length - 1) {
     state.index = slides.length - 1;
   }
+
+  // El botón para seguir en la galería aparece en el visor individual cuando
+  // ya no quedan más imágenes de este post/carrusel.
+  const atEnd = state.index >= slides.length - 1;
+  const canContinue =
+    !state.gallery &&
+    !state.loadingGallery &&
+    !!state.continueTarget &&
+    !!state.continueTarget.username &&
+    atEnd;
+
+  continueButton.style.display = canContinue ? "block" : "none";
 
   const hasMore = galleryHasMore(state);
   const multiple = slides.length > 1 || hasMore;
@@ -623,7 +1033,7 @@ function renderCurrentSlide() {
 
 async function navigate(delta) {
   const state = overlay;
-  if (!state) return;
+  if (!state || state.loadingGallery) return;
 
   let slides = getSlidesNow();
   if (!slides.length) return;
@@ -650,7 +1060,6 @@ async function navigate(delta) {
       if (overlay !== state) return;
 
       state.loading.style.display = "none";
-      syncSlidesIndex(state, current);
       slides = getSlidesNow();
       nextIndex = state.index + delta;
     }
@@ -672,7 +1081,7 @@ async function navigate(delta) {
     if (overlay !== state) return;
 
     slides = getSlidesNow();
-    nextIndex = Math.min(slides.length - 1, nextIndex);
+    nextIndex = state.index + delta;
   }
 
   nextIndex = Math.max(0, Math.min(slides.length - 1, nextIndex));
@@ -687,7 +1096,9 @@ async function navigate(delta) {
   }
 
   // En modo carrusel, mantener sincronizado el carrusel de Instagram.
-  if (!state.gallery) {
+  // Si estamos usando la lista completa de la API (el DOM estaba incompleto),
+  // no tocamos la navegación de Instagram para no desincronizarla.
+  if (!state.gallery && !state.useApiSlides) {
     const igButton = findIgNavButton(
       state.root,
       delta > 0 ? "next" : "prev"
@@ -775,7 +1186,12 @@ function imagesFromApiItem(item) {
 
   if (Array.isArray(item.carousel_media) && item.carousel_media.length) {
     return item.carousel_media
-      .filter((media) => media && media.media_type === 1)
+      .filter(
+        (media) =>
+          media &&
+          media.media_type !== 2 &&
+          !/video/i.test(media.__typename || "")
+      )
       .map((media) =>
         bestImageUrl(
           media.image_versions2 && media.image_versions2.candidates
@@ -1303,6 +1719,14 @@ function applyCarouselUrls(gallery, slide, urls) {
 
   if (extras.length) {
     gallery.images.splice(index + 1, 0, ...extras);
+
+    // Si el visor estaba mostrando una imagen posterior al punto de inserción,
+    // su índice se corre para seguir mostrando la misma imagen. Se hace acá
+    // mismo, de forma atómica, para que no haya carreras con la precarga.
+    if (overlay && overlay.gallery === gallery && overlay.index > index) {
+      overlay.index += extras.length;
+      if (!overlay.loadingGallery) renderCurrentSlide();
+    }
   }
 
   slide.isCarousel = false;
@@ -1472,14 +1896,6 @@ async function ensureCarouselExpanded(gallery, slide) {
   }
 }
 
-// Recalcula el índice actual después de insertar imágenes en el medio.
-function syncSlidesIndex(state, slide) {
-  if (!state || !state.gallery || !slide) return;
-
-  const index = state.gallery.images.indexOf(slide);
-  if (index >= 0) state.index = index;
-}
-
 /* ------------------------------------------------------------------ */
 /* Precarga de los próximos carruseles                                 */
 /* ------------------------------------------------------------------ */
@@ -1555,7 +1971,6 @@ async function runGalleryPrefetch(state) {
     if (!targets.length) return;
 
     const target = targets[0];
-    const currentSlide = gallery.images[state.index];
 
     target.prefetchAttempts = (target.prefetchAttempts || 0) + 1;
 
@@ -1567,8 +1982,6 @@ async function runGalleryPrefetch(state) {
 
     if (overlay !== state) return;
 
-    // La inserción de imágenes puede haber corrido el índice actual.
-    syncSlidesIndex(state, currentSlide);
     warmUpcomingSlides(state);
   }
 }
@@ -1655,6 +2068,11 @@ async function triggerGridLoad(gallery) {
 }
 
 function loadMoreGridPage(gallery) {
+  if (!gallery.allowGridFallback) {
+    gallery.hasMore = false;
+    return Promise.resolve(0);
+  }
+
   if (!gallery.hasMore || gallery.cancelled) return Promise.resolve(0);
   if (gallery.gridLoadingPromise) return gallery.gridLoadingPromise;
 
@@ -1735,7 +2153,14 @@ async function loadNextGalleryPage(gallery) {
     if (gallery.cancelled) return 0;
     if (gallery.hasMore) return added;
 
-    // La API se quedó sin páginas: seguimos con la grilla del perfil.
+    // La API se quedó sin páginas: seguimos con la grilla del perfil. Solo es
+    // seguro si estamos en la página de ese perfil (si la galería se abrió
+    // desde un post del feed, la grilla no pertenece a este usuario).
+    if (!gallery.allowGridFallback) {
+      gallery.hasMore = false;
+      return added;
+    }
+
     gallery.source = "grid";
     gallery.hasMore = true;
 
@@ -1750,6 +2175,11 @@ async function loadNextGalleryPage(gallery) {
 
     if (gallery.cancelled) return 0;
 
+    if (!gallery.allowGridFallback) {
+      gallery.hasMore = false;
+      return 0;
+    }
+
     // Si la API dejó de responder, seguimos con la grilla del perfil.
     gallery.source = "grid";
     gallery.hasMore = true;
@@ -1760,6 +2190,10 @@ async function loadNextGalleryPage(gallery) {
 }
 
 async function createGallery(username) {
+  const profile = getProfileUsername();
+  const allowGridFallback =
+    !!profile && profile.toLowerCase() === String(username).toLowerCase();
+
   const gallery = {
     images: [],
     seenPosts: new Set(),
@@ -1773,6 +2207,7 @@ async function createGallery(username) {
     emptyGridLoads: 0,
     cancelled: false,
     source: "grid",
+    allowGridFallback,
     // coordinación de la precarga de carruseles
     harvestChain: Promise.resolve(),
     prefetchPromise: null,
@@ -1804,7 +2239,7 @@ async function createGallery(username) {
 
       // Si la API ya no tiene más páginas, completamos con la grilla del
       // perfil y seguimos cargando por scroll.
-      if (!gallery.hasMore) {
+      if (!gallery.hasMore && gallery.allowGridFallback) {
         gallery.source = "grid";
         gallery.hasMore = true;
         collectGridPosts(gallery);
@@ -1813,18 +2248,30 @@ async function createGallery(username) {
       console.warn("Full Size Images for IG:", error);
 
       addGraphPosts(gallery, timelineEdgesFromUser(user));
-      gallery.source = "grid";
-      gallery.hasMore = true;
+
+      if (gallery.allowGridFallback) {
+        gallery.source = "grid";
+        gallery.hasMore = true;
+      } else {
+        gallery.source = "api";
+        gallery.hasMore = false;
+      }
     }
   } else if (user) {
     addGraphPosts(gallery, timelineEdgesFromUser(user));
-    gallery.source = "grid";
-    gallery.hasMore = true;
+
+    if (gallery.allowGridFallback) {
+      gallery.source = "grid";
+      gallery.hasMore = true;
+    } else {
+      gallery.source = "api";
+      gallery.hasMore = false;
+    }
   }
 
   // Si la API no sirvió, usamos las portadas de la grilla del perfil y
   // seguimos cargando más por scroll.
-  if (gallery.source === "grid") {
+  if (gallery.source === "grid" && gallery.allowGridFallback) {
     collectGridPosts(gallery);
     gallery.hasMore = true;
   }
