@@ -1,4 +1,4 @@
-# Full Size Images for IG v0.0.4
+# Full Size Images for IG v0.0.5
 
 [![es](https://img.shields.io/badge/lang-es-yellow.svg)](https://github.com/fedeholc/full-size-insta-extension/blob/master/README.es.md)
 
@@ -20,7 +20,10 @@
 
 ## How to use it
 
-Once installed, when you enter the Instagram website, each image will have a magnifying glass icon in the upper right corner. Clicking on the icon will open the image in full size. Clicking on the image will take you back to the previous screen.
+Once installed, when you enter the Instagram website, each image will have a magnifying glass icon in the upper right corner. Clicking on the icon will open the image in full size. Clicking on the image (or pressing `Esc`) will take you back to the previous screen.
+
+If the post is a carousel, you can move through its images with the left and right arrow keys, or with the on-screen arrows shown in the full size viewer. A counter in the corner shows which photo you are viewing.
+
 It works only with photos (both from the main feed and from each user's profile), but not with videos or reels.
 
 ## License

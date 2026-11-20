@@ -1,4 +1,4 @@
-# Full Size Images for IG v0.0.4
+# Full Size Images for IG v0.0.5
 
 [![en](https://img.shields.io/badge/lang-en-red.svg)](https://github.com/fedeholc/full-size-insta-extension/blob/master/README.md)
 
@@ -20,7 +20,10 @@
 
 ## Cómo usarla
 
-Una vez instalada, cuando entres en la web de Instagram, cada imagen tendrá un icono en forma de lupa en la esquina superior derecha. Al hacer click en el icono se abrirá la imagen a tamaño completo. Si haces click en la imagen, volverás a la pantalla anterior.
+Una vez instalada, cuando entres en la web de Instagram, cada imagen tendrá un icono en forma de lupa en la esquina superior derecha. Al hacer click en el icono se abrirá la imagen a tamaño completo. Si haces click en la imagen (o presionas `Esc`), volverás a la pantalla anterior.
+
+Si el post es un carrusel, puedes pasar las imágenes con las flechas izquierda y derecha del teclado, o con las flechas que aparecen en el visor a tamaño completo. Un contador en la esquina indica qué foto estás viendo.
+
 Sólo funciona con fotos (tanto del feed principal como del perfil de cada usuario), pero no con vídeos o reels.
 
 ## Licencia
