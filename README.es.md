@@ -34,12 +34,9 @@ Cuando estás viendo una foto o un carrusel de forma individual (con la lupa) y 
 
 Si Instagram no expone los datos del perfil, la extensión abre el perfil del autor por detrás del visor y usa su grilla para cargar la galería; al cerrarla vuelve automáticamente a la página donde estabas.
 
-### Galería del feed
+### Home del feed
 
-En la página principal de Instagram (`https://www.instagram.com/`), mientras ves una foto o un carrusel con la lupa aparecen dos botones:
-
-- **View user images in gallery mode**: abre la galería del autor del post, empezando por la imagen que estás viendo. Es la misma galería que se abre desde el perfil del usuario.
-- **View feed in gallery mode**: recorre las fotos que forman parte de tu feed. A medida que avanzas se van cargando más posts, igual que al scrollear la página.
+En la página principal de Instagram (`https://www.instagram.com/`), mientras ves una foto o un carrusel con la lupa aparece el botón **View user images in gallery mode**. Abre la galería del autor del post, empezando por la imagen que estás viendo. En la home el botón está disponible desde cualquier imagen, no solo al final del post. Es la misma galería que se abre desde el perfil del usuario.
 
 Sólo funciona con fotos (tanto del feed principal como del perfil de cada usuario), pero no con vídeos o reels.
 

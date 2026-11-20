@@ -34,12 +34,9 @@ When you are viewing a single photo or a carousel on its own (with the magnifyin
 
 If Instagram does not expose the profile data, the extension opens the author's profile behind the viewer and uses its grid to load the gallery; when you close it, it automatically returns to the page you were on.
 
-### Feed gallery
+### Home feed
 
-On the Instagram home page (`https://www.instagram.com/`), while viewing a photo or a carousel with the magnifying glass, two buttons appear:
-
-- **View user images in gallery mode**: opens the post author's gallery, starting from the image you are viewing. It is the same gallery that opens from the user's profile.
-- **View feed in gallery mode**: goes through the photos that are part of your feed. More posts keep loading as you move forward, just like when scrolling the page.
+On the Instagram home page (`https://www.instagram.com/`), while viewing a photo or a carousel with the magnifying glass, a **View user images in gallery mode** button appears. It opens the post author's gallery, starting from the image you are viewing. On the home feed the button is available from any image, not only at the end of the post. It is the same gallery that opens from the user's profile.
 
 It works only with photos (both from the main feed and from each user's profile), but not with videos or reels.
 

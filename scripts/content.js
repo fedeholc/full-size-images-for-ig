@@ -4,10 +4,9 @@
 // - Botón "View as full size gallery" en los perfiles para recorrer todas las
 //   fotos del usuario, incluyendo todas las imágenes de cada carrusel.
 // - En el visor individual, botón "Continue in gallery mode" para pasar a la
-//   galería del autor desde la imagen que se está viendo.
-// - En la home del feed, además del anterior ("View user images in gallery
-//   mode"), un botón "View feed in gallery mode" para recorrer las fotos del
-//   feed.
+//   galería del autor desde la imagen que se está viendo (en la home aparece
+//   como "View user images in gallery mode" y está disponible en cualquier
+//   imagen).
 
 const STYLE_ID = "fse-styles";
 const GALLERY_BUTTON_ID = "fse-gallery-button";
@@ -240,15 +239,6 @@ function injectStyles() {
       background: #1877f2 !important;
       border-color: #fff !important;
       outline: none !important;
-    }
-
-    .fse-overlay .fse-continue.fse-continue-secondary {
-      background: rgba(0, 0, 0, 0.6) !important;
-      border-color: rgba(255, 255, 255, 0.7) !important;
-    }
-    .fse-overlay .fse-continue.fse-continue-secondary:hover,
-    .fse-overlay .fse-continue.fse-continue-secondary:focus-visible {
-      background: rgba(255, 255, 255, 0.2) !important;
     }
   `;
 
@@ -531,18 +521,10 @@ function createOverlayState() {
   const continueButton = createOverlayActionButton(
     "Continue in gallery mode",
     "Continuar en modo galería desde esta imagen",
-    () => continueInGallery("user")
+    () => continueInGallery()
   );
 
-  // Galería con las fotos del feed. Solo se muestra en la home.
-  const feedGalleryButton = createOverlayActionButton(
-    "View feed in gallery mode",
-    "Ver las fotos del feed en modo galería desde esta imagen",
-    () => continueInGallery("feed")
-  );
-  feedGalleryButton.classList.add("fse-continue-secondary");
-
-  continueBar.append(continueButton, feedGalleryButton);
+  continueBar.append(continueButton);
 
   container.append(
     image,
@@ -573,7 +555,6 @@ function createOverlayState() {
     nextButton,
     continueBar,
     continueButton,
-    feedGalleryButton,
     slides: [],
     root: null,
     index: 0,
@@ -764,9 +745,8 @@ async function completeOverlayCarousel(state) {
   renderCurrentSlide();
 }
 
-// Abre el visor con todas las fotos del perfil (o del feed). Si recibe un
-// `target` ({ code, offset, src }), arranca en esa imagen en lugar del
-// principio.
+// Abre el visor con todas las fotos del perfil. Si recibe un `target`
+// ({ code, offset, src }), arranca en esa imagen en lugar del principio.
 function openGalleryOverlay(username, target = null, options = {}) {
   const state = createOverlayState();
   state.restoreScroll = savePageScroll();
@@ -778,13 +758,10 @@ function openGalleryOverlay(username, target = null, options = {}) {
   state.loading.style.display = "block";
   renderCurrentSlide();
 
-  const loadGallery =
-    options.source === "feed"
-      ? createFeedGallery()
-      : createGallery(username, {
-          ...options,
-          shouldStop: () => overlay !== state,
-        });
+  const loadGallery = createGallery(username, {
+    ...options,
+    shouldStop: () => overlay !== state,
+  });
 
   loadGallery
     .then(async (gallery) => {
@@ -827,12 +804,10 @@ function openGalleryOverlay(username, target = null, options = {}) {
 }
 
 // Pasa del visor individual al modo galería, empezando por la imagen actual.
-// mode = "user": galería del autor del post.
-// mode = "feed": galería con las fotos del feed (solo en la home).
-async function continueInGallery(mode = "user") {
+async function continueInGallery() {
   const state = overlay;
   if (!state || state.gallery || state.loadingGallery) return;
-  if (mode === "user" && !state.continueTarget) return;
+  if (!state.continueTarget) return;
 
   // Evita que un doble click abra dos galerías mientras se resuelve el autor.
   state.loadingGallery = true;
@@ -847,11 +822,6 @@ async function continueInGallery(mode = "user") {
         ? getBestImageSrc(current)
         : slideSrc(current),
   };
-
-  if (mode === "feed") {
-    openGalleryOverlay("", target, { source: "feed" });
-    return;
-  }
 
   let username = (state.continueTarget && state.continueTarget.username) || "";
   let userId = "";
@@ -1074,7 +1044,6 @@ function renderCurrentSlide() {
     nextButton,
     continueBar,
     continueButton,
-    feedGalleryButton,
   } = state;
   const slides = getSlidesNow();
 
@@ -1090,9 +1059,9 @@ function renderCurrentSlide() {
     state.index = slides.length - 1;
   }
 
-  // En la home los dos accesos a la galería están siempre visibles: desde
-  // cualquier imagen se puede seguir con el resto de las fotos del feed o con
-  // las del autor. En los perfiles se mantiene el botón al final del post.
+  // En la home el acceso a la galería está siempre visible: desde cualquier
+  // imagen se puede seguir con las fotos del autor. En los perfiles se mantiene
+  // el botón al final del post.
   const onFeed = isHomeFeed();
   const atEnd = state.index >= slides.length - 1;
   const canContinueUser =
@@ -1101,16 +1070,12 @@ function renderCurrentSlide() {
     !!state.continueTarget &&
     (!!state.continueTarget.username || !!state.continueTarget.code) &&
     (atEnd || onFeed);
-  const canContinueFeed =
-    !state.gallery && !state.loadingGallery && onFeed;
 
   continueButton.textContent = onFeed
     ? "View user images in gallery mode"
     : "Continue in gallery mode";
   continueButton.style.display = canContinueUser ? "block" : "none";
-  feedGalleryButton.style.display = canContinueFeed ? "block" : "none";
-  continueBar.style.display =
-    canContinueUser || canContinueFeed ? "flex" : "none";
+  continueBar.style.display = canContinueUser ? "flex" : "none";
 
   const hasMore = galleryHasMore(state);
   const multiple = slides.length > 1 || hasMore;
@@ -1515,110 +1480,12 @@ function gridPostAnchors() {
   ];
 }
 
-// Una imagen que forma parte del post (descarta avatares e iconos).
-function isFeedPostImage(image) {
-  if (!image || !getImageSrc(image)) return false;
-
-  const width = Math.max(
-    image.width || 0,
-    image.naturalWidth || 0,
-    parseInt(image.getAttribute("width") || "0", 10) || 0
-  );
-
-  return width > 149;
-}
-
-// Agrupa las imágenes de cada post del feed. En el feed no siempre hay un
-// <a href="/p/..."> alrededor de la foto, así que además de los anchors se
-// usan los <article> del DOM.
-function feedPostGroups() {
-  const groups = [];
-  const articles = [
-    ...document.querySelectorAll('article, [role="article"]'),
-  ];
-
-  if (articles.length) {
-    articles.forEach((article) => {
-      const images = [...article.querySelectorAll("img")]
-        .filter((image) => !image.closest("header"))
-        .filter(isFeedPostImage);
-      if (!images.length) return;
-
-      // Carrusel montado: las slides son los <li> de una lista. La lista de
-      // comentarios también tiene <li>, pero sus avatares son chicos.
-      for (const list of article.querySelectorAll("ul")) {
-        const listImages = [...list.querySelectorAll("li img")];
-        const slides = listImages.filter(isFeedPostImage);
-
-        if (listImages.length > 1 && slides.length) {
-          groups.push({ container: article, slides, carousel: true });
-          return;
-        }
-      }
-
-      groups.push({
-        container: article,
-        slides: images,
-        carousel: images.length > 1,
-      });
-    });
-
-    return groups;
-  }
-
-  // Respaldo si Instagram deja de usar <article>.
-  const seen = new Set();
-
-  [...document.querySelectorAll("img")].forEach((image) => {
-    if (seen.has(image) || !isFeedPostImage(image)) return;
-
-    const { slides, root } = findSlides(image);
-    slides.forEach((slide) => seen.add(slide));
-
-    groups.push({
-      container: root || image.closest("article") || image.parentElement,
-      slides,
-      carousel: slides.length > 1,
-    });
-  });
-
-  return groups;
-}
-
-function collectFeedPosts(gallery) {
-  let added = 0;
-
-  feedPostGroups().forEach(({ container, slides, carousel }) => {
-    const urls = slides.map(getBestImageSrc).filter(Boolean);
-    if (!urls.length) return;
-
-    const code = postCodeFromElement(container, slides[0]);
-    if (code && gallery.seenCodes.has(code)) return;
-
-    const before = gallery.images.length;
-    const count = addGalleryImages(gallery, urls, code);
-    if (!count) return;
-
-    if (code) gallery.seenCodes.add(code);
-    // En el feed sólo vemos las slides montadas: se marca para completar el
-    // carrusel con la API (si ya están todas, no agrega nada).
-    if (carousel) gallery.images[before].isCarousel = true;
-    added += count;
-  });
-
-  return added;
-}
-
 // Agrega a la galería las portadas de los posts que ya están en la grilla.
 // `options.skip` permite ignorar anchors que ya existían antes (por ejemplo,
-// los del feed cuando la SPA todavía no terminó de cambiar de página).
+// cuando la SPA todavía no terminó de cambiar de página).
 function collectGridPosts(gallery, options = {}) {
   let added = 0;
   const skip = options.skip || null;
-
-  // En el feed conviene leer los posts completos (incluidas las slides de los
-  // carruseles) antes que las portadas de los anchors.
-  if (gallery.isFeed) added += collectFeedPosts(gallery);
 
   gridPostAnchors().forEach((anchor) => {
     if (skip && skip.has(anchor)) return;
@@ -2511,7 +2378,7 @@ async function loadNextGalleryPage(gallery) {
   }
 }
 
-// Estado común de una galería (perfil o feed).
+// Estado común de una galería.
 function newGalleryState(overrides = {}) {
   return {
     images: [],
@@ -2527,7 +2394,6 @@ function newGalleryState(overrides = {}) {
     cancelled: false,
     source: "grid",
     allowGridFallback: false,
-    isFeed: false,
     // coordinación de la precarga de carruseles
     harvestChain: Promise.resolve(),
     prefetchPromise: null,
@@ -2535,25 +2401,6 @@ function newGalleryState(overrides = {}) {
     foregroundHarvestPending: 0,
     ...overrides,
   };
-}
-
-// Galería con las fotos del feed que ya están en pantalla. Al llegar al final
-// se sigue scrolleando la página, igual que en la grilla de un perfil.
-async function createFeedGallery() {
-  const gallery = newGalleryState({
-    source: "grid",
-    allowGridFallback: true,
-    hasMore: true,
-    isFeed: true,
-  });
-
-  collectGridPosts(gallery);
-
-  if (!gallery.images.length) {
-    throw new Error("No se encontraron fotos en el feed");
-  }
-
-  return gallery;
 }
 
 // Convierte un nombre de usuario en su id numérico usando el buscador de la
@@ -3412,8 +3259,8 @@ function getProfileUsername() {
   return RESERVED_PATHS.has(username.toLowerCase()) ? "" : username;
 }
 
-// La home de Instagram es la única pantalla donde tiene sentido armar una
-// galería con las fotos del feed.
+// En la home el botón para pasar a la galería del autor está disponible desde
+// cualquier imagen del feed, no solo al llegar al final del post.
 function isHomeFeed() {
   return location.pathname === "/" || location.pathname === "";
 }
