@@ -5,12 +5,24 @@
 //   fotos del usuario, incluyendo todas las imágenes de cada carrusel.
 // - En el visor individual, botón "Continue in gallery mode" para pasar a la
 //   galería del autor desde la imagen que se está viendo.
+// - En la home del feed, además del anterior ("View user images in gallery
+//   mode"), un botón "View feed in gallery mode" para recorrer las fotos del
+//   feed.
 
 const STYLE_ID = "fse-styles";
 const GALLERY_BUTTON_ID = "fse-gallery-button";
 
 // id de la app web de Instagram (necesario para los endpoints internos)
 const IG_APP_ID = "936619743392459";
+const IG_ASBD_ID = "359341";
+
+// Consulta GraphQL que usa la web para la grilla de posts de un perfil.
+// El doc_id rota cada tanto; si la paginación deja de traer fotos, hay que
+// actualizarlo mirando el request de Instagram en DevTools (Network > graphql).
+const PROFILE_POSTS_DOC_ID = "28904005159232689";
+const PROFILE_POSTS_FRIENDLY_NAME =
+  "PolarisLoggedOutDesktopWWWProfilePostsTabContentQuery_connection";
+const PROFILE_POSTS_USERNAME_DOC_ID = "9310670392322965";
 
 // tope de seguridad para no cargar perfiles gigantes sin límite
 const MAX_GALLERY_IMAGES = 2000;
@@ -196,12 +208,21 @@ function injectStyles() {
       font-size: 20px !important;
     }
 
-    .fse-overlay .fse-continue {
+    .fse-overlay .fse-continue-bar {
       position: absolute !important;
       left: 50% !important;
       bottom: 22px !important;
       transform: translateX(-50%) !important;
       z-index: 2 !important;
+      display: flex !important;
+      flex-wrap: wrap !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 8px !important;
+      max-width: calc(100vw - 32px) !important;
+    }
+
+    .fse-overlay .fse-continue {
       padding: 10px 16px !important;
       margin: 0 !important;
       border: 2px solid transparent !important;
@@ -219,6 +240,15 @@ function injectStyles() {
       background: #1877f2 !important;
       border-color: #fff !important;
       outline: none !important;
+    }
+
+    .fse-overlay .fse-continue.fse-continue-secondary {
+      background: rgba(0, 0, 0, 0.6) !important;
+      border-color: rgba(255, 255, 255, 0.7) !important;
+    }
+    .fse-overlay .fse-continue.fse-continue-secondary:hover,
+    .fse-overlay .fse-continue.fse-continue-secondary:focus-visible {
+      background: rgba(255, 255, 255, 0.2) !important;
     }
   `;
 
@@ -318,7 +348,10 @@ function findSlides(image) {
   }
 
   const post =
-    image.closest("article") || image.closest('[role="dialog"]') || null;
+    image.closest("article") ||
+    image.closest('[role="article"]') ||
+    image.closest('[role="dialog"]') ||
+    null;
 
   if (post) {
     // 2. Buscar la lista del carrusel dentro del post (por ejemplo cuando se
@@ -423,6 +456,21 @@ function createNavButton(direction, symbol, title, ariaLabel) {
   return button;
 }
 
+function createOverlayActionButton(text, title, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "fse-continue";
+  button.textContent = text;
+  button.title = title;
+  button.setAttribute("aria-label", text);
+  button.style.display = "none";
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onClick();
+  });
+  return button;
+}
+
 // Crea el visor vacío (sin imágenes) y lo deja como visor activo.
 function createOverlayState() {
   injectStyles();
@@ -475,17 +523,26 @@ function createOverlayState() {
     closeOverlay();
   });
 
-  const continueButton = document.createElement("button");
-  continueButton.type = "button";
-  continueButton.className = "fse-continue";
-  continueButton.textContent = "Continue in gallery mode";
-  continueButton.title = "Continuar en modo galería desde esta imagen";
-  continueButton.setAttribute("aria-label", "Continue in gallery mode");
-  continueButton.style.display = "none";
-  continueButton.addEventListener("click", (event) => {
-    event.stopPropagation();
-    continueInGallery();
-  });
+  const continueBar = document.createElement("div");
+  continueBar.className = "fse-continue-bar";
+  continueBar.style.display = "none";
+
+  // Galería del autor del post que se está viendo.
+  const continueButton = createOverlayActionButton(
+    "Continue in gallery mode",
+    "Continuar en modo galería desde esta imagen",
+    () => continueInGallery("user")
+  );
+
+  // Galería con las fotos del feed. Solo se muestra en la home.
+  const feedGalleryButton = createOverlayActionButton(
+    "View feed in gallery mode",
+    "Ver las fotos del feed en modo galería desde esta imagen",
+    () => continueInGallery("feed")
+  );
+  feedGalleryButton.classList.add("fse-continue-secondary");
+
+  continueBar.append(continueButton, feedGalleryButton);
 
   container.append(
     image,
@@ -494,7 +551,7 @@ function createOverlayState() {
     prevButton,
     nextButton,
     closeButton,
-    continueButton
+    continueBar
   );
 
   // al hacer click en cualquier lado (menos en los botones) se cierra
@@ -514,7 +571,9 @@ function createOverlayState() {
     loading,
     prevButton,
     nextButton,
+    continueBar,
     continueButton,
+    feedGalleryButton,
     slides: [],
     root: null,
     index: 0,
@@ -631,7 +690,10 @@ function galleryTargetFromImage(image) {
   if (!image) return null;
 
   const container =
-    image.closest("article") || image.closest('[role="dialog"]') || null;
+    image.closest("article") ||
+    image.closest('[role="article"]') ||
+    image.closest('[role="dialog"]') ||
+    null;
 
   const username = postUsernameFromElement(container, image);
   const code = postCodeFromElement(container, image);
@@ -702,9 +764,10 @@ async function completeOverlayCarousel(state) {
   renderCurrentSlide();
 }
 
-// Abre el visor con todas las fotos del perfil. Si recibe un `target`
-// ({ code, offset, src }), arranca en esa imagen en lugar del principio.
-function openGalleryOverlay(username, target = null) {
+// Abre el visor con todas las fotos del perfil (o del feed). Si recibe un
+// `target` ({ code, offset, src }), arranca en esa imagen en lugar del
+// principio.
+function openGalleryOverlay(username, target = null, options = {}) {
   const state = createOverlayState();
   state.restoreScroll = savePageScroll();
   state.loadingGallery = true;
@@ -715,9 +778,26 @@ function openGalleryOverlay(username, target = null) {
   state.loading.style.display = "block";
   renderCurrentSlide();
 
-  createGallery(username)
+  const loadGallery =
+    options.source === "feed"
+      ? createFeedGallery()
+      : createGallery(username, {
+          ...options,
+          shouldStop: () => overlay !== state,
+        });
+
+  loadGallery
     .then(async (gallery) => {
-      if (overlay !== state) return;
+      if (overlay !== state) {
+        // La galería pudo haber abierto el perfil por detrás: se restaura.
+        await restoreProfileNavigation(gallery);
+        return;
+      }
+
+      // La navegación al perfil pudo desmontar el visor: se vuelve a montar.
+      if (!state.container.isConnected) {
+        document.body.appendChild(state.container);
+      }
 
       state.gallery = gallery;
       state.slides = gallery.images;
@@ -747,24 +827,56 @@ function openGalleryOverlay(username, target = null) {
 }
 
 // Pasa del visor individual al modo galería, empezando por la imagen actual.
-function continueInGallery() {
+// mode = "user": galería del autor del post.
+// mode = "feed": galería con las fotos del feed (solo en la home).
+async function continueInGallery(mode = "user") {
   const state = overlay;
-  if (!state || state.gallery || !state.continueTarget) return;
+  if (!state || state.gallery || state.loadingGallery) return;
+  if (mode === "user" && !state.continueTarget) return;
 
-  const username = state.continueTarget.username;
-  if (!username) return;
+  // Evita que un doble click abra dos galerías mientras se resuelve el autor.
+  state.loadingGallery = true;
 
   const slides = getSlidesNow();
   const current = slides[state.index];
-
-  openGalleryOverlay(username, {
-    code: state.continueTarget.code,
+  const target = {
+    code: (state.continueTarget && state.continueTarget.code) || "",
     offset: state.index,
     src:
       current instanceof HTMLImageElement
         ? getBestImageSrc(current)
         : slideSrc(current),
-  });
+  };
+
+  if (mode === "feed") {
+    openGalleryOverlay("", target, { source: "feed" });
+    return;
+  }
+
+  let username = (state.continueTarget && state.continueTarget.username) || "";
+  let userId = "";
+
+  if (target.code) {
+    state.loading.textContent = "Buscando el perfil…";
+    state.loading.style.display = "block";
+
+    // El usuario que aparece en el DOM puede faltar o ser incorrecto (por
+    // ejemplo en el feed). El post sí sabe a quién pertenece.
+    const author = await postAuthorFromApi(target.code);
+    if (overlay !== state) return;
+
+    if (author) {
+      username = author.username || username;
+      userId = author.userId || "";
+    }
+  }
+
+  if (!username) {
+    state.loading.textContent = "No se pudo identificar el perfil de la imagen";
+    return;
+  }
+
+  openGalleryOverlay(username, target, { userId });
 }
 
 function imageUrlKey(url) {
@@ -874,7 +986,7 @@ async function resolveGalleryStart(gallery, target, state) {
   while (
     index < 0 &&
     gallery.hasMore &&
-    gallery.source === "api" &&
+    (gallery.source === "api" || gallery.source === "graphql") &&
     attempts < GALLERY_TARGET_SEARCH_PAGES
   ) {
     attempts += 1;
@@ -909,7 +1021,13 @@ function closeOverlay() {
   const { container, gallery, restoreScroll } = overlay;
 
   // corta cualquier carga de la grilla que esté en curso
-  if (gallery) gallery.cancelled = true;
+  if (gallery) {
+    gallery.cancelled = true;
+
+    // Si la galería abrió el perfil del autor por detrás, se vuelve a la
+    // página original.
+    restoreProfileNavigation(gallery);
+  }
 
   container.remove();
   overlay = null;
@@ -948,15 +1066,23 @@ function renderCurrentSlide() {
   if (!overlay) return;
 
   const state = overlay;
-  const { image, counter, loading, prevButton, nextButton, continueButton } =
-    state;
+  const {
+    image,
+    counter,
+    loading,
+    prevButton,
+    nextButton,
+    continueBar,
+    continueButton,
+    feedGalleryButton,
+  } = state;
   const slides = getSlidesNow();
 
   if (!slides.length) {
     counter.style.display = "none";
     prevButton.style.display = "none";
     nextButton.style.display = "none";
-    continueButton.style.display = "none";
+    continueBar.style.display = "none";
     return;
   }
 
@@ -964,17 +1090,27 @@ function renderCurrentSlide() {
     state.index = slides.length - 1;
   }
 
-  // El botón para seguir en la galería aparece en el visor individual cuando
-  // ya no quedan más imágenes de este post/carrusel.
+  // En la home los dos accesos a la galería están siempre visibles: desde
+  // cualquier imagen se puede seguir con el resto de las fotos del feed o con
+  // las del autor. En los perfiles se mantiene el botón al final del post.
+  const onFeed = isHomeFeed();
   const atEnd = state.index >= slides.length - 1;
-  const canContinue =
+  const canContinueUser =
     !state.gallery &&
     !state.loadingGallery &&
     !!state.continueTarget &&
-    !!state.continueTarget.username &&
-    atEnd;
+    (!!state.continueTarget.username || !!state.continueTarget.code) &&
+    (atEnd || onFeed);
+  const canContinueFeed =
+    !state.gallery && !state.loadingGallery && onFeed;
 
-  continueButton.style.display = canContinue ? "block" : "none";
+  continueButton.textContent = onFeed
+    ? "View user images in gallery mode"
+    : "Continue in gallery mode";
+  continueButton.style.display = canContinueUser ? "block" : "none";
+  feedGalleryButton.style.display = canContinueFeed ? "block" : "none";
+  continueBar.style.display =
+    canContinueUser || canContinueFeed ? "flex" : "none";
 
   const hasMore = galleryHasMore(state);
   const multiple = slides.length > 1 || hasMore;
@@ -1143,7 +1279,12 @@ async function fetchJson(url, options = {}) {
 
   const requestOptions = {
     credentials: "include",
-    headers: { "x-ig-app-id": IG_APP_ID },
+    headers: {
+      "x-ig-app-id": IG_APP_ID,
+      // Los mismos headers que usa el cliente web de Instagram en sus XHR.
+      "x-asbd-id": IG_ASBD_ID,
+      "x-requested-with": "XMLHttpRequest",
+    },
     ...rest,
   };
 
@@ -1165,7 +1306,7 @@ async function fetchJson(url, options = {}) {
   }
 
   const response = await fetch(url, requestOptions);
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status} ${url}`);
   return response.json();
 }
 
@@ -1180,7 +1321,8 @@ function bestImageUrl(candidates) {
   return best.url || "";
 }
 
-// Extrae las fotos (no videos) de un item de la API mobile.
+// Extrae las fotos (no videos) de un item de la API mobile o del timeline
+// embebido en la página del perfil (`polaris_ordered_timeline_connection`).
 function imagesFromApiItem(item) {
   if (!item) return [];
 
@@ -1192,19 +1334,25 @@ function imagesFromApiItem(item) {
           media.media_type !== 2 &&
           !/video/i.test(media.__typename || "")
       )
-      .map((media) =>
-        bestImageUrl(
-          media.image_versions2 && media.image_versions2.candidates
-        )
+      .map(
+        (media) =>
+          bestImageUrl(
+            media.image_versions2 && media.image_versions2.candidates
+          ) ||
+          media.display_uri ||
+          media.display_url
       )
       .filter(Boolean);
   }
 
-  if (item.media_type !== 1) return [];
+  // En el timeline embebido los posts no siempre traen `media_type`.
+  if (typeof item.media_type === "number" && item.media_type !== 1) return [];
 
-  const url = bestImageUrl(
-    item.image_versions2 && item.image_versions2.candidates
-  );
+  const url =
+    bestImageUrl(item.image_versions2 && item.image_versions2.candidates) ||
+    item.display_uri ||
+    item.display_url;
+
   return url ? [url] : [];
 }
 
@@ -1367,11 +1515,114 @@ function gridPostAnchors() {
   ];
 }
 
-// Agrega a la galería las portadas de los posts que ya están en la grilla.
-function collectGridPosts(gallery) {
+// Una imagen que forma parte del post (descarta avatares e iconos).
+function isFeedPostImage(image) {
+  if (!image || !getImageSrc(image)) return false;
+
+  const width = Math.max(
+    image.width || 0,
+    image.naturalWidth || 0,
+    parseInt(image.getAttribute("width") || "0", 10) || 0
+  );
+
+  return width > 149;
+}
+
+// Agrupa las imágenes de cada post del feed. En el feed no siempre hay un
+// <a href="/p/..."> alrededor de la foto, así que además de los anchors se
+// usan los <article> del DOM.
+function feedPostGroups() {
+  const groups = [];
+  const articles = [
+    ...document.querySelectorAll('article, [role="article"]'),
+  ];
+
+  if (articles.length) {
+    articles.forEach((article) => {
+      const images = [...article.querySelectorAll("img")]
+        .filter((image) => !image.closest("header"))
+        .filter(isFeedPostImage);
+      if (!images.length) return;
+
+      // Carrusel montado: las slides son los <li> de una lista. La lista de
+      // comentarios también tiene <li>, pero sus avatares son chicos.
+      for (const list of article.querySelectorAll("ul")) {
+        const listImages = [...list.querySelectorAll("li img")];
+        const slides = listImages.filter(isFeedPostImage);
+
+        if (listImages.length > 1 && slides.length) {
+          groups.push({ container: article, slides, carousel: true });
+          return;
+        }
+      }
+
+      groups.push({
+        container: article,
+        slides: images,
+        carousel: images.length > 1,
+      });
+    });
+
+    return groups;
+  }
+
+  // Respaldo si Instagram deja de usar <article>.
+  const seen = new Set();
+
+  [...document.querySelectorAll("img")].forEach((image) => {
+    if (seen.has(image) || !isFeedPostImage(image)) return;
+
+    const { slides, root } = findSlides(image);
+    slides.forEach((slide) => seen.add(slide));
+
+    groups.push({
+      container: root || image.closest("article") || image.parentElement,
+      slides,
+      carousel: slides.length > 1,
+    });
+  });
+
+  return groups;
+}
+
+function collectFeedPosts(gallery) {
   let added = 0;
 
+  feedPostGroups().forEach(({ container, slides, carousel }) => {
+    const urls = slides.map(getBestImageSrc).filter(Boolean);
+    if (!urls.length) return;
+
+    const code = postCodeFromElement(container, slides[0]);
+    if (code && gallery.seenCodes.has(code)) return;
+
+    const before = gallery.images.length;
+    const count = addGalleryImages(gallery, urls, code);
+    if (!count) return;
+
+    if (code) gallery.seenCodes.add(code);
+    // En el feed sólo vemos las slides montadas: se marca para completar el
+    // carrusel con la API (si ya están todas, no agrega nada).
+    if (carousel) gallery.images[before].isCarousel = true;
+    added += count;
+  });
+
+  return added;
+}
+
+// Agrega a la galería las portadas de los posts que ya están en la grilla.
+// `options.skip` permite ignorar anchors que ya existían antes (por ejemplo,
+// los del feed cuando la SPA todavía no terminó de cambiar de página).
+function collectGridPosts(gallery, options = {}) {
+  let added = 0;
+  const skip = options.skip || null;
+
+  // En el feed conviene leer los posts completos (incluidas las slides de los
+  // carruseles) antes que las portadas de los anchors.
+  if (gallery.isFeed) added += collectFeedPosts(gallery);
+
   gridPostAnchors().forEach((anchor) => {
+    if (skip && skip.has(anchor)) return;
+
     const match = (anchor.getAttribute("href") || "").match(POST_HREF_PATTERN);
     if (!match) return;
 
@@ -1395,10 +1646,24 @@ function collectGridPosts(gallery) {
   return added;
 }
 
-// En la grilla, Instagram marca los posts con carrusel con un icono.
+// En la grilla, Instagram marca los posts con carrusel con un icono. En el
+// feed, además, el post ya trae montadas las slides del carrusel.
 function isCarouselTile(anchor) {
-  return !!anchor.querySelector(
-    'svg[aria-label*="carousel" i], svg[aria-label*="carrusel" i]'
+  if (
+    anchor.querySelector(
+      'svg[aria-label*="carousel" i], svg[aria-label*="carrusel" i]'
+    )
+  ) {
+    return true;
+  }
+
+  const post =
+    anchor.closest("article") || anchor.closest('[role="article"]') || null;
+
+  if (!post) return false;
+
+  return [...post.querySelectorAll("ul")].some(
+    (list) => list.querySelectorAll("li img").length > 1
   );
 }
 
@@ -1646,45 +1911,98 @@ async function closeVisibleDialog(targetDialog = null) {
   }
 }
 
-// Pide los datos del post a la API interna usando el id del media. Es mucho
-// más rápido que abrir el modal y no interfiere con la navegación.
-// Devuelve null si la API no puede resolver el carrusel (entonces se usa el
-// modal como respaldo).
-async function carouselUrlsFromApi(slide, signal) {
-  if (!slide) return null;
+// Datos de un post según la API interna. Se guarda el pedido en una caché para
+// no repetirlo (por ejemplo, al abrir el visor y después pasar a la galería).
+const mediaInfoCache = new Map();
+
+function mediaInfoFromApi(slide, signal) {
+  if (!slide) return Promise.resolve(null);
 
   // Casi siempre se puede resolver el id a partir del shortcode, incluso para
   // las portadas que salieron de la grilla del perfil.
   const mediaId = slide.mediaId || mediaIdFromCode(slide.code);
-  if (!mediaId) return null;
+  if (!mediaId) return Promise.resolve(null);
 
   slide.mediaId = mediaId;
 
-  try {
-    const data = await fetchJson(`/api/v1/media/${mediaId}/info/`, {
-      signal,
-      timeout: 8000,
+  if (!signal && mediaInfoCache.has(mediaId)) {
+    return mediaInfoCache.get(mediaId);
+  }
+
+  const request = fetchJson(`/api/v1/media/${mediaId}/info/`, {
+    signal,
+    timeout: 8000,
+  })
+    .then((data) =>
+      data && Array.isArray(data.items) ? data.items[0] || null : null
+    )
+    .catch(() => null);
+
+  if (!signal) {
+    mediaInfoCache.set(mediaId, request);
+
+    // Un error puntual no se cachea, así se puede reintentar más adelante.
+    request.then((item) => {
+      if (!item) mediaInfoCache.delete(mediaId);
     });
-    const item = data && Array.isArray(data.items) ? data.items[0] : null;
-    if (!item) return null;
+  }
 
-    const children = Array.isArray(item.carousel_media)
-      ? item.carousel_media
-      : null;
+  return request;
+}
 
-    if (!children || !children.length) {
-      // Si la API confirma que el post no es un carrusel, no hay nada que
-      // completar. Si dice que sí pero no mandó los hijos, usamos el respaldo.
-      if (typeof item.media_type === "number" && item.media_type !== 8) {
-        return [];
-      }
-      return null;
+// Autor del post (nombre de usuario e id numérico). Es la forma más confiable
+// de saber a qué perfil pertenece una imagen del feed.
+async function postAuthorFromApi(code) {
+  if (!code) return null;
+
+  let item = await mediaInfoFromApi({ code });
+
+  // La API del media también puede estar bloqueada: el HTML del post trae
+  // el mismo dato en `xig_polaris_media`.
+  if (!item || !item.user) {
+    item = (await fetchPostHtmlMedia(code)) || item;
+  }
+
+  const user = item && item.user;
+  if (!user) return null;
+
+  return {
+    username: typeof user.username === "string" ? user.username : "",
+    userId: numericMediaId(user.pk || user.id),
+  };
+}
+
+function carouselUrlsFromMediaItem(item) {
+  if (!item) return null;
+
+  const children = Array.isArray(item.carousel_media)
+    ? item.carousel_media
+    : null;
+
+  if (!children || !children.length) {
+    // Si sabemos que el post no es un carrusel, no hay nada que completar.
+    // Si dice que sí pero no mandó los hijos, se usa el respaldo.
+    if (typeof item.media_type === "number" && item.media_type !== 8) {
+      return [];
     }
-
-    return imagesFromApiItem(item);
-  } catch (error) {
     return null;
   }
+
+  return imagesFromApiItem(item);
+}
+
+// Pide los datos del post a la API interna usando el id del media. Es mucho
+// más rápido que abrir el modal y no interfiere con la navegación.
+// Devuelve null si no se puede resolver el carrusel (entonces se usa el
+// modal como respaldo).
+async function carouselUrlsFromApi(slide, signal) {
+  if (!slide) return null;
+
+  const item = await mediaInfoFromApi(slide, signal);
+  const urls = carouselUrlsFromMediaItem(item);
+  if (urls) return urls;
+
+  return carouselUrlsFromMediaItem(await fetchPostHtmlMedia(slide.code));
 }
 
 // Inserta las imágenes del carrusel justo después de su portada y deja las
@@ -2116,7 +2434,8 @@ function loadGalleryPage(gallery) {
         ? `&max_id=${encodeURIComponent(gallery.cursor)}`
         : "";
       const data = await fetchJson(
-        `/api/v1/feed/user/${gallery.userId}/?count=33${cursor}`
+        `/api/v1/feed/user/${gallery.userId}/?count=33${cursor}`,
+        { timeout: 10000 }
       );
       const items = data && Array.isArray(data.items) ? data.items : [];
 
@@ -2140,36 +2459,43 @@ function loadGalleryPage(gallery) {
   return gallery.loadingPromise;
 }
 
-// Carga la página siguiente: por la API de IG si funciona o, si no, scrolleando
-// la grilla del perfil (como hace el feed).
+// Sigue cargando con la grilla del perfil (solo válido si estamos en la página
+// de ese perfil; si la galería se abrió desde un post del feed, la grilla no
+// pertenece a este usuario).
+async function switchToGridFallback(gallery, added = 0) {
+  gallery.source = "grid";
+  gallery.hasMore = true;
+
+  const gridAdded = collectGridPosts(gallery);
+  if (gridAdded > 0) return added + gridAdded;
+
+  if (added > 0) return added;
+
+  return loadMoreGridPage(gallery);
+}
+
+// Carga la página siguiente: por GraphQL/API si funciona o, si no,
+// scrolleando la grilla del perfil (como hace el feed).
 async function loadNextGalleryPage(gallery) {
   if (gallery.source === "grid") {
     return loadMoreGridPage(gallery);
   }
 
   try {
-    const added = await loadGalleryPage(gallery);
+    const added =
+      gallery.source === "graphql"
+        ? await loadGraphqlGalleryPage(gallery)
+        : await loadGalleryPage(gallery);
 
     if (gallery.cancelled) return 0;
     if (gallery.hasMore) return added;
 
-    // La API se quedó sin páginas: seguimos con la grilla del perfil. Solo es
-    // seguro si estamos en la página de ese perfil (si la galería se abrió
-    // desde un post del feed, la grilla no pertenece a este usuario).
     if (!gallery.allowGridFallback) {
       gallery.hasMore = false;
       return added;
     }
 
-    gallery.source = "grid";
-    gallery.hasMore = true;
-
-    const gridAdded = collectGridPosts(gallery);
-    if (gridAdded > 0) return added + gridAdded;
-
-    if (added > 0) return added;
-
-    return loadMoreGridPage(gallery);
+    return switchToGridFallback(gallery, added);
   } catch (error) {
     console.warn("Full Size Images for IG:", error);
 
@@ -2181,20 +2507,13 @@ async function loadNextGalleryPage(gallery) {
     }
 
     // Si la API dejó de responder, seguimos con la grilla del perfil.
-    gallery.source = "grid";
-    gallery.hasMore = true;
-    collectGridPosts(gallery);
-
-    return loadMoreGridPage(gallery);
+    return switchToGridFallback(gallery);
   }
 }
 
-async function createGallery(username) {
-  const profile = getProfileUsername();
-  const allowGridFallback =
-    !!profile && profile.toLowerCase() === String(username).toLowerCase();
-
-  const gallery = {
+// Estado común de una galería (perfil o feed).
+function newGalleryState(overrides = {}) {
+  return {
     images: [],
     seenPosts: new Set(),
     seenCodes: new Set(),
@@ -2207,77 +2526,875 @@ async function createGallery(username) {
     emptyGridLoads: 0,
     cancelled: false,
     source: "grid",
-    allowGridFallback,
+    allowGridFallback: false,
+    isFeed: false,
     // coordinación de la precarga de carruseles
     harvestChain: Promise.resolve(),
     prefetchPromise: null,
     prefetchPending: false,
     foregroundHarvestPending: 0,
+    ...overrides,
   };
+}
 
-  let user = null;
+// Galería con las fotos del feed que ya están en pantalla. Al llegar al final
+// se sigue scrolleando la página, igual que en la grilla de un perfil.
+async function createFeedGallery() {
+  const gallery = newGalleryState({
+    source: "grid",
+    allowGridFallback: true,
+    hasMore: true,
+    isFeed: true,
+  });
+
+  collectGridPosts(gallery);
+
+  if (!gallery.images.length) {
+    throw new Error("No se encontraron fotos en el feed");
+  }
+
+  return gallery;
+}
+
+// Convierte un nombre de usuario en su id numérico usando el buscador de la
+// web. Es el respaldo cuando la API del perfil no responde: con el id alcanza
+// para pedir las fotos.
+async function userIdFromSearch(username) {
+  if (!username) return "";
 
   try {
     const data = await fetchJson(
-      `/api/v1/users/web_profile_info/?username=${encodeURIComponent(
+      `/web/search/topsearch/?context=blended&query=${encodeURIComponent(
         username
-      )}`
+      )}&rank_token=0.1`,
+      { timeout: 8000 }
     );
-    user = data && data.data ? data.data.user : null;
+
+    const users = data && Array.isArray(data.users) ? data.users : [];
+    const wanted = username.toLowerCase();
+    const match = users.find(
+      (entry) =>
+        entry &&
+        entry.user &&
+        String(entry.user.username || "").toLowerCase() === wanted
+    );
+
+    return match ? numericMediaId(match.user.pk) : "";
+  } catch (error) {
+    return "";
+  }
+}
+
+// Perfil por la API web. Según la cuenta, Instagram puede responder con un
+// muro de login, así que el resultado se guarda para no repetir el pedido.
+const webProfileCache = new Map();
+
+function fetchWebProfile(username) {
+  if (!username) return Promise.resolve(null);
+
+  const key = username.toLowerCase();
+  if (webProfileCache.has(key)) return webProfileCache.get(key);
+
+  const request = fetchJson(
+    `/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
+    { timeout: 10000 }
+  )
+    .then((data) => (data && data.data ? data.data.user : null))
+    .catch((error) => {
+      console.warn("Full Size Images for IG:", error);
+      return null;
+    });
+
+  webProfileCache.set(key, request);
+
+  // Si falló, se permite reintentar en otra apertura de la galería.
+  request.then((user) => {
+    if (!user) webProfileCache.delete(key);
+  });
+
+  return request;
+}
+
+/* ------------------------------------------------------------------ */
+/* Respaldo: datos incrustados en la página del perfil                 */
+/* ------------------------------------------------------------------ */
+
+// Instagram deja en el HTML del perfil un JSON con el usuario y sus posts.
+// Se usa sólo cuando las APIs no devolvieron nada.
+const profileHtmlCache = new Map();
+const MAX_JSON_NODES = 250000;
+
+function walkJson(value, visit, state) {
+  if (!value || typeof value !== "object") return;
+  if (state.nodes > MAX_JSON_NODES) return;
+
+  state.nodes += 1;
+  if (visit(value) === false) return;
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => walkJson(item, visit, state));
+    return;
+  }
+
+  Object.keys(value).forEach((key) => walkJson(value[key], visit, state));
+}
+
+function jsonMediaUrls(node) {
+  // Los nodos GraphQL con hijos de carrusel se expanden con su extractor.
+  if (node.edge_sidecar_to_children) return imagesFromGraphNode(node);
+
+  const fromApi = imagesFromApiItem(node);
+  if (fromApi.length) return fromApi;
+  return imagesFromGraphNode(node);
+}
+
+function jsonNodeIsCarousel(node) {
+  if (Array.isArray(node.carousel_media) && node.carousel_media.length > 1) {
+    return true;
+  }
+
+  const edges =
+    node.edge_sidecar_to_children && node.edge_sidecar_to_children.edges;
+
+  if (Array.isArray(edges) && edges.length > 1) return true;
+
+  return node.media_type === 8 || (node.carousel_media_count || 0) > 1;
+}
+
+// Busca la primera aparición de una clave dentro de los JSON de la página.
+function findJsonValueForKey(value, key, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 30) return null;
+
+  if (
+    !Array.isArray(value) &&
+    Object.prototype.hasOwnProperty.call(value, key)
+  ) {
+    return value[key];
+  }
+
+  const children = Array.isArray(value) ? value : Object.values(value);
+
+  for (const child of children) {
+    const found = findJsonValueForKey(child, key, depth + 1);
+    if (found) return found;
+  }
+
+  return null;
+}
+
+function readCookie(name) {
+  const prefix = `${name}=`;
+  const row = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix));
+
+  return row ? row.slice(prefix.length) : "";
+}
+
+// Instagram incluye el token `lsd` en el JSON inicial de la página.
+function pageLsd() {
+  for (const script of document.querySelectorAll(
+    'script[type="application/json"]'
+  )) {
+    const match = (script.textContent || "").match(/"lsd":"([^"]+)"/);
+    if (match) return match[1];
+  }
+
+  return "";
+}
+
+const TIMELINE_KEYS = [
+  "polaris_ordered_timeline_connection",
+  "xdt_api__v1__feed__user_timeline_graphql_connection",
+];
+
+// Busca posts sueltos en cualquier parte del JSON (respaldo si cambia la
+// estructura del timeline).
+function profileDataFromJson(payloads, username) {
+  const result = { userId: "", posts: [] };
+  const seenCodes = new Set();
+  const wanted = String(username || "").toLowerCase();
+  const state = { nodes: 0 };
+
+  walkJson(
+    payloads,
+    (node) => {
+      if (Array.isArray(node)) return true;
+
+      if (
+        !result.userId &&
+        wanted &&
+        typeof node.username === "string" &&
+        node.username.toLowerCase() === wanted
+      ) {
+        const id = numericMediaId(node.pk) || mediaIdFromGraphId(node.id);
+        if (id) result.userId = id;
+      }
+
+      const code = node.code || node.shortcode || "";
+      if (!code || seenCodes.has(code)) return true;
+
+      const urls = jsonMediaUrls(node);
+      if (!urls.length) return true;
+
+      seenCodes.add(code);
+      result.posts.push({
+        code,
+        urls,
+        isCarousel: jsonNodeIsCarousel(node),
+        mediaId: numericMediaId(node.pk),
+      });
+
+      return true;
+    },
+    state
+  );
+
+  return result;
+}
+
+// Lee el usuario y la primera página del timeline que Instagram embebe en el
+// HTML del perfil. Es la vía que sigue funcionando cuando web_profile_info y
+// la API mobile están bloqueadas.
+function profileDataFromHtml(html, username) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const payloads = [...doc.querySelectorAll('script[type="application/json"]')]
+    .map((script) => {
+      try {
+        return JSON.parse(script.textContent);
+      } catch (error) {
+        return null;
+      }
+    })
+    .filter(Boolean);
+
+  const result = {
+    userId: "",
+    posts: [],
+    pageInfo: null,
+    lsd: (html.match(/"lsd":"([^"]+)"/) || [])[1] || "",
+  };
+
+  const userNode = findJsonValueForKey(payloads, "xig_user_by_username");
+
+  if (userNode) {
+    result.userId =
+      numericMediaId(userNode.pk) || mediaIdFromGraphId(userNode.id);
+  }
+
+  let connection = null;
+
+  for (const key of TIMELINE_KEYS) {
+    connection = findJsonValueForKey(payloads, key);
+    if (connection) break;
+  }
+
+  if (connection && Array.isArray(connection.edges)) {
+    connection.edges.forEach((edge) => {
+      const node = edge && edge.node;
+      if (!node) return;
+
+      const code = node.code || node.shortcode || "";
+      const urls = jsonMediaUrls(node);
+      if (!code || !urls.length) return;
+
+      result.posts.push({
+        code,
+        urls,
+        isCarousel: jsonNodeIsCarousel(node),
+        mediaId: numericMediaId(node.pk),
+      });
+    });
+
+    result.pageInfo = connection.page_info || null;
+  }
+
+  // Si la estructura cambió, se buscan los posts en todo el JSON.
+  if (!result.posts.length) {
+    const generic = profileDataFromJson(payloads, username);
+    if (generic.userId && !result.userId) result.userId = generic.userId;
+    result.posts = generic.posts;
+  }
+
+  return result;
+}
+
+function parseJsonScripts(doc) {
+  return [...doc.querySelectorAll('script[type="application/json"]')]
+    .map((script) => {
+      try {
+        return JSON.parse(script.textContent);
+      } catch (error) {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+const postHtmlCache = new Map();
+
+// El HTML de un post trae `xig_polaris_media` con el autor y las imágenes del
+// carrusel. Se usa cuando la API del media no responde.
+async function fetchPostHtmlMedia(code) {
+  if (!code) return null;
+  if (postHtmlCache.has(code)) return postHtmlCache.get(code);
+
+  const request = fetch(`/p/${encodeURIComponent(code)}/`, {
+    credentials: "include",
+    signal:
+      typeof AbortSignal !== "undefined" && AbortSignal.timeout
+        ? AbortSignal.timeout(15000)
+        : undefined,
+    headers: {
+      "x-ig-app-id": IG_APP_ID,
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+  })
+    .then((response) => (response.ok ? response.text() : null))
+    .then((html) => {
+      if (!html) return null;
+
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const media = findJsonValueForKey(
+        parseJsonScripts(doc),
+        "xig_polaris_media"
+      );
+
+      if (!media) return null;
+      // Las páginas sin sesión anidan el payload un nivel más.
+      return media.if_not_gated_logged_out || media;
+    })
+    .catch(() => null);
+
+  postHtmlCache.set(code, request);
+
+  request.then((media) => {
+    if (!media) postHtmlCache.delete(code);
+  });
+
+  return request;
+}
+
+function fetchProfileHtmlData(username) {
+  if (!username) return Promise.resolve(null);
+
+  const key = username.toLowerCase();
+  if (profileHtmlCache.has(key)) return profileHtmlCache.get(key);
+
+  const request = fetch(`/${encodeURIComponent(username)}/`, {
+    credentials: "include",
+    signal:
+      typeof AbortSignal !== "undefined" && AbortSignal.timeout
+        ? AbortSignal.timeout(15000)
+        : undefined,
+    headers: {
+      "x-ig-app-id": IG_APP_ID,
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+  })
+    .then((response) => (response.ok ? response.text() : null))
+    .then((html) => (html ? profileDataFromHtml(html, username) : null))
+    .catch(() => null);
+
+  profileHtmlCache.set(key, request);
+
+  // Un resultado vacío no se cachea: puede ser un bloqueo transitorio.
+  request.then((data) => {
+    if (!data || (!data.userId && !data.posts.length)) {
+      profileHtmlCache.delete(key);
+    }
+  });
+
+  return request;
+}
+
+function addTimelineNode(gallery, node, mediaId = "") {
+  if (!node) return 0;
+
+  const code = node.code || node.shortcode || "";
+  const postId = String(node.pk || node.id || "");
+
+  if (postId && gallery.seenPosts.has(postId)) return 0;
+  if (code && gallery.seenCodes.has(code)) return 0;
+
+  const urls = jsonMediaUrls(node);
+  if (!urls.length) return 0;
+
+  const before = gallery.images.length;
+  const added = addGalleryImages(gallery, urls, code, {
+    mediaId: numericMediaId(node.pk) || mediaId,
+  });
+
+  if (!added) return 0;
+
+  if (postId) gallery.seenPosts.add(postId);
+  if (code) gallery.seenCodes.add(code);
+
+  if (jsonNodeIsCarousel(node) && added <= 1) {
+    gallery.images[before].isCarousel = true;
+  }
+
+  return added;
+}
+
+function addPostsFromProfileHtml(gallery, data) {
+  if (!data || !Array.isArray(data.posts)) return 0;
+
+  let added = 0;
+
+  data.posts.forEach(({ code, urls, isCarousel, mediaId }) => {
+    if (!code || gallery.seenCodes.has(code)) return;
+
+    const before = gallery.images.length;
+    const count = addGalleryImages(gallery, urls, code, { mediaId });
+    if (!count) return;
+
+    gallery.seenCodes.add(code);
+    if (isCarousel && count <= 1) gallery.images[before].isCarousel = true;
+    added += count;
+  });
+
+  return added;
+}
+
+function jazoestValue(lsd) {
+  let sum = 0;
+
+  for (const char of String(lsd)) sum += char.charCodeAt(0);
+
+  return `2${sum}`;
+}
+
+// Página siguiente del timeline del perfil vía GraphQL.
+async function loadGraphqlGalleryPage(gallery) {
+  if (!gallery.userId || !gallery.hasMore) return 0;
+  if (gallery.loadingPromise) return gallery.loadingPromise;
+
+  const info = gallery.graphql;
+
+  if (!info || !info.lsd || !info.csrf) {
+    gallery.hasMore = false;
+    return 0;
+  }
+
+  gallery.loadingPromise = (async () => {
+    const variables = {
+      first: 12,
+      id: String(gallery.userId),
+      __relay_internal__pv__PolarisSEOIsCrawlerrelayprovider: false,
+    };
+
+    // Sin cursor se pide la primera página.
+    if (info.cursor) variables.after = info.cursor;
+
+    const body = new URLSearchParams({
+      av: "0",
+      __d: "www",
+      __user: "0",
+      __a: "1",
+      __comet_req: "7",
+      lsd: info.lsd,
+      jazoest: jazoestValue(info.lsd),
+      fb_api_caller_class: "RelayModern",
+      fb_api_req_friendly_name: PROFILE_POSTS_FRIENDLY_NAME,
+      server_timestamps: "true",
+      variables: JSON.stringify(variables),
+      doc_id: PROFILE_POSTS_DOC_ID,
+    });
+
+    const response = await fetch("/api/graphql", {
+      method: "POST",
+      credentials: "include",
+      // El navegador no deja pisar el header Referer: se usa esta opción.
+      referrer: info.profileUrl,
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-fb-friendly-name": PROFILE_POSTS_FRIENDLY_NAME,
+        "x-fb-lsd": info.lsd,
+        "x-csrftoken": info.csrf,
+        "x-ig-app-id": IG_APP_ID,
+        "x-asbd-id": IG_ASBD_ID,
+      },
+      body: body.toString(),
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+    const connection =
+      data &&
+      data.data &&
+      data.data.node &&
+      data.data.node.polaris_ordered_timeline_connection;
+
+    if (
+      !connection ||
+      !Array.isArray(connection.edges) ||
+      !connection.edges.length
+    ) {
+      gallery.hasMore = false;
+      return 0;
+    }
+
+    let added = 0;
+
+    connection.edges.forEach((edge) => {
+      added += addTimelineNode(gallery, edge && edge.node);
+    });
+
+    const pageInfo = connection.page_info || {};
+    info.cursor = pageInfo.end_cursor || "";
+    gallery.hasMore =
+      !!pageInfo.has_next_page &&
+      !!info.cursor &&
+      gallery.images.length < MAX_GALLERY_IMAGES;
+
+    return added;
+  })();
+
+  try {
+    return await gallery.loadingPromise;
+  } finally {
+    gallery.loadingPromise = null;
+  }
+}
+
+// Último respaldo para la primera página: la consulta GraphQL por nombre de
+// usuario (la misma que usa la web para la grilla del perfil).
+async function timelineFromUsername(username) {
+  if (!username) return null;
+
+  const variables = {
+    data: {
+      count: 12,
+      include_relationship_info: true,
+      latest_besties_reel_media: true,
+      latest_reel_media: true,
+    },
+    username,
+    __relay_internal__pv__PolarisFeedShareMenurelayprovider: false,
+  };
+
+  try {
+    const data = await fetchJson(
+      `/graphql/query/?doc_id=${PROFILE_POSTS_USERNAME_DOC_ID}&variables=${encodeURIComponent(
+        JSON.stringify(variables)
+      )}`,
+      { timeout: 10000 }
+    );
+
+    const connection =
+      data &&
+      data.data &&
+      data.data.xdt_api__v1__feed__user_timeline_graphql_connection;
+
+    if (!connection || !Array.isArray(connection.edges)) return null;
+
+    return {
+      edges: connection.edges,
+      pageInfo: connection.page_info || null,
+    };
+  } catch (error) {
+    console.warn("Full Size Images for IG:", error);
+    return null;
+  }
+}
+
+// Pide la primera página de fotos del usuario. La API de fotos por id sigue
+// funcionando aunque web_profile_info falle.
+async function loadFirstGalleryPage(gallery) {
+  if (!gallery.userId) return 0;
+
+  gallery.hasMore = true;
+
+  try {
+    const added = await loadGalleryPage(gallery);
+    if (!added) throw new Error("La API no devolvió imágenes");
+    gallery.source = "api";
+    return added;
+  } catch (error) {
+    console.warn("Full Size Images for IG:", error);
+    gallery.hasMore = false;
+    return 0;
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function profilePathFor(username) {
+  return `/${String(username || "").toLowerCase()}/`;
+}
+
+// Link al perfil que ya está en la página (por ejemplo, el autor en el
+// encabezado de un post del feed).
+function findProfileLink(username) {
+  const wanted = profilePathFor(username);
+  if (!username) return null;
+
+  return (
+    [...document.querySelectorAll("a[href]")].find((anchor) => {
+      try {
+        const path = new URL(anchor.getAttribute("href"), location.origin)
+          .pathname.toLowerCase();
+        return path === wanted || path === wanted.slice(0, -1);
+      } catch (error) {
+        return false;
+      }
+    }) || null
+  );
+}
+
+// Vuelve a la página desde donde se abrió la galería (si se abrió el perfil
+// del autor por detrás).
+async function restoreProfileNavigation(gallery) {
+  if (!gallery || !gallery.navigatedProfile) return;
+
+  const { originalPath } = gallery.navigatedProfile;
+  gallery.navigatedProfile = null;
+
+  if (!originalPath) return;
+
+  // Puede que la navegación de la SPA todavía esté en curso.
+  const deadline = Date.now() + 1500;
+
+  while (location.pathname === originalPath && Date.now() < deadline) {
+    await sleep(100);
+  }
+
+  if (location.pathname === originalPath) return;
+
+  try {
+    history.back();
   } catch (error) {
     console.warn("Full Size Images for IG:", error);
   }
+}
 
-  if (user && user.id) {
-    gallery.userId = user.id;
-    gallery.hasMore = true;
+// Último recurso cuando las APIs no devuelven nada: se navega al perfil del
+// autor dentro de la SPA (queda tapado por el visor) y se usa su grilla, que
+// es el mismo camino que ya funciona al abrir la galería desde un perfil.
+async function collectGalleryViaProfileNavigation(
+  gallery,
+  username,
+  shouldStop
+) {
+  if (!username || !gallery) return 0;
 
-    try {
-      const added = await loadGalleryPage(gallery);
-      if (!added) throw new Error("La API no devolvió imágenes");
-      gallery.source = "api";
+  const link = findProfileLink(username);
+  if (!link) return 0;
 
-      // Si la API ya no tiene más páginas, completamos con la grilla del
-      // perfil y seguimos cargando por scroll.
-      if (!gallery.hasMore && gallery.allowGridFallback) {
-        gallery.source = "grid";
-        gallery.hasMore = true;
-        collectGridPosts(gallery);
-      }
-    } catch (error) {
-      console.warn("Full Size Images for IG:", error);
+  const originalPath = location.pathname;
+  const wanted = profilePathFor(username);
 
-      addGraphPosts(gallery, timelineEdgesFromUser(user));
+  // Mientras la SPA cambia de página, el DOM del feed puede seguir montado.
+  // Esos anchors no pertenecen al perfil y hay que excluirlos.
+  const anchorsBefore = new Set(gridPostAnchors());
+  const title = String(username).toLowerCase();
 
-      if (gallery.allowGridFallback) {
-        gallery.source = "grid";
-        gallery.hasMore = true;
+  gallery.navigatedProfile = { originalPath };
+
+  console.info(
+    "Full Size Images for IG: cargando la galería desde el perfil",
+    username
+  );
+
+  link.click();
+
+  const deadline = Date.now() + 10000;
+  let lastCount = 0;
+  let stableSince = Date.now();
+
+  while (Date.now() < deadline) {
+    if (shouldStop()) {
+      await restoreProfileNavigation(gallery);
+      return 0;
+    }
+
+    const path = location.pathname.toLowerCase();
+    const onProfile = path === wanted || path === wanted.slice(0, -1);
+    const newAnchors = onProfile
+      ? gridPostAnchors().filter((anchor) => !anchorsBefore.has(anchor))
+      : [];
+
+    if (newAnchors.length > 0) {
+      const titleMatches = String(document.title || "")
+        .toLowerCase()
+        .includes(title);
+
+      if (newAnchors.length === lastCount) {
+        // La grilla nueva ya está estable. El título del documento confirma
+        // que la SPA terminó de cambiar al perfil.
+        const stableFor = Date.now() - stableSince;
+        if (stableFor >= (titleMatches ? 350 : 600)) break;
       } else {
-        gallery.source = "api";
+        lastCount = newAnchors.length;
+        stableSince = Date.now();
+      }
+    }
+
+    await sleep(150);
+  }
+
+  if (shouldStop()) {
+    await restoreProfileNavigation(gallery);
+    return 0;
+  }
+
+  gallery.allowGridFallback = true;
+  gallery.source = "grid";
+  gallery.hasMore = true;
+
+  collectGridPosts(gallery, { skip: anchorsBefore });
+
+  return gallery.images.length;
+}
+
+// `options.userId` evita tener que resolver el perfil cuando ya se conoce (por
+// ejemplo, al continuar en galería desde un post del feed).
+async function createGallery(username, options = {}) {
+  const profile = getProfileUsername();
+  const allowGridFallback =
+    !!profile && profile.toLowerCase() === String(username || "").toLowerCase();
+
+  const gallery = newGalleryState({ allowGridFallback });
+
+  const shouldStop =
+    typeof options.shouldStop === "function" ? options.shouldStop : () => false;
+
+  let userId = numericMediaId(options.userId);
+  let user = null;
+
+  // 1. El perfil por la API web (trae el id y la primera tanda de posts).
+  if (!userId && username) {
+    user = await fetchWebProfile(username);
+    userId = user && user.id ? String(user.id) : "";
+  }
+
+  // 2. Si el perfil no respondió, el post que se está viendo dice a quién
+  //    pertenece y alcanza para pedir sus fotos.
+  if (!userId && options.code) {
+    const author = await postAuthorFromApi(options.code);
+    if (author) {
+      userId = author.userId || "";
+      if (!username) username = author.username || "";
+    }
+  }
+
+  // 3. Si sólo tenemos el nombre, el buscador interno lo resuelve.
+  if (!userId && username) {
+    userId = await userIdFromSearch(username);
+  }
+
+  if (userId) {
+    gallery.userId = userId;
+    await loadFirstGalleryPage(gallery);
+  }
+
+  // 4. Datos que ya vinieron con el perfil: sirven aunque falle la API de
+  //    fotos.
+  if (user) addGraphPosts(gallery, timelineEdgesFromUser(user));
+
+  // 5. Los datos incrustados en la página del perfil son la vía que sigue
+  //    funcionando cuando las APIs están bloqueadas. También dejan el cursor
+  //    para paginar por GraphQL. En la página del perfil no hace falta: la
+  //    grilla del DOM ya es una fuente confiable.
+  const needsHtml =
+    !!username &&
+    !gallery.allowGridFallback &&
+    (!gallery.images.length || gallery.source !== "api" || !gallery.hasMore);
+
+  if (needsHtml) {
+    const htmlData = await fetchProfileHtmlData(username);
+    // El `lsd` de la página actual es el que usa el cliente web en sus XHR.
+    const lsd = pageLsd() || (htmlData && htmlData.lsd) || "";
+    const csrf = readCookie("csrftoken");
+    const profileUrl = `${location.origin}/${encodeURIComponent(username)}/`;
+
+    if (htmlData) {
+      addPostsFromProfileHtml(gallery, htmlData);
+
+      if (!gallery.userId && htmlData.userId) {
+        gallery.userId = String(htmlData.userId);
+      }
+
+      const pageInfo = htmlData.pageInfo;
+
+      if (
+        gallery.userId &&
+        pageInfo &&
+        pageInfo.has_next_page &&
+        lsd &&
+        csrf
+      ) {
+        gallery.graphql = {
+          cursor: pageInfo.end_cursor || "",
+          lsd,
+          csrf,
+          profileUrl,
+        };
+        gallery.source = "graphql";
+        gallery.hasMore = !!gallery.graphql.cursor;
+      }
+    }
+
+    // Si no quedó un cursor para paginar, se pide la primera página por
+    // GraphQL. También completa las slides si el HTML no trajo posts.
+    if (gallery.userId && lsd && csrf && !gallery.graphql && !gallery.hasMore) {
+      gallery.graphql = { cursor: "", lsd, csrf, profileUrl };
+      gallery.source = "graphql";
+      gallery.hasMore = true;
+
+      try {
+        await loadGraphqlGalleryPage(gallery);
+      } catch (error) {
+        console.warn("Full Size Images for IG:", error);
         gallery.hasMore = false;
       }
     }
-  } else if (user) {
-    addGraphPosts(gallery, timelineEdgesFromUser(user));
 
-    if (gallery.allowGridFallback) {
-      gallery.source = "grid";
-      gallery.hasMore = true;
-    } else {
-      gallery.source = "api";
-      gallery.hasMore = false;
+    // Último respaldo: la consulta GraphQL por nombre de usuario.
+    if (!gallery.images.length) {
+      const timeline = await timelineFromUsername(username);
+
+      if (timeline) {
+        timeline.edges.forEach((edge) => {
+          addTimelineNode(gallery, edge && edge.node);
+        });
+      }
     }
   }
 
-  // Si la API no sirvió, usamos las portadas de la grilla del perfil y
-  // seguimos cargando más por scroll.
-  if (gallery.source === "grid" && gallery.allowGridFallback) {
+  // 6. En la página del perfil, la grilla del DOM siempre es una fuente válida
+  //    y permite seguir cargando con scroll.
+  const paginates =
+    gallery.source === "api" || gallery.source === "graphql";
+
+  if (gallery.allowGridFallback && !paginates) {
     collectGridPosts(gallery);
+    gallery.source = "grid";
     gallery.hasMore = true;
+  } else if (!gallery.allowGridFallback && !paginates) {
+    gallery.source = "api";
+    gallery.hasMore = false;
+  }
+
+  // 7. Si no hubo forma de obtener las fotos por APIs, se abre el perfil del
+  //    autor por detrás del visor y se usa su grilla (la misma vía que
+  //    funciona al abrir la galería desde un perfil).
+  if (!gallery.images.length && !gallery.allowGridFallback && username) {
+    await collectGalleryViaProfileNavigation(gallery, username, shouldStop);
   }
 
   if (!gallery.images.length) {
+    await restoreProfileNavigation(gallery);
     throw new Error("No se encontraron imágenes en este perfil");
+  }
+
+  if (shouldStop()) {
+    await restoreProfileNavigation(gallery);
   }
 
   return gallery;
@@ -2293,6 +3410,12 @@ function getProfileUsername() {
 
   const username = match[1];
   return RESERVED_PATHS.has(username.toLowerCase()) ? "" : username;
+}
+
+// La home de Instagram es la única pantalla donde tiene sentido armar una
+// galería con las fotos del feed.
+function isHomeFeed() {
+  return location.pathname === "/" || location.pathname === "";
 }
 
 function updateGalleryButton() {

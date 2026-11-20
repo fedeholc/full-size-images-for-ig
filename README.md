@@ -1,4 +1,4 @@
-# Full Size Images for IG v0.3.0
+# Full Size Images for IG v0.4.0
 
 [![es](https://img.shields.io/badge/lang-es-yellow.svg)](https://github.com/fedeholc/full-size-insta-extension/blob/master/README.es.md)
 
@@ -30,7 +30,16 @@ When you open a user's profile (for example `https://www.instagram.com/rafabadia
 
 More photos are loaded automatically as you approach the end of the gallery. To avoid waits when you reach a carousel, the extension preloads the next carousels in the background (and caches their images) before you get there. If Instagram does not expose the complete data of a profile, the gallery uses the photos available on the profile grid and keeps loading more of them by scrolling the profile in the background (the scroll position is restored when you close the gallery). When a carousel appears only with its cover photo in the grid, the extension opens the post in the background (hidden behind the viewer) to get the rest of its images.
 
-When you are viewing a single photo or a carousel on its own (with the magnifying glass) and reach its last image, a **Continue in gallery mode** button appears. It switches to the author's full gallery starting from the image you were viewing, instead of starting over from the beginning.
+When you are viewing a single photo or a carousel on its own (with the magnifying glass) and reach its last image, a **Continue in gallery mode** button appears. It switches to the author's full gallery starting from the image you were viewing, instead of starting over from the beginning. It works the same whether the image was opened from a profile or from the feed.
+
+If Instagram does not expose the profile data, the extension opens the author's profile behind the viewer and uses its grid to load the gallery; when you close it, it automatically returns to the page you were on.
+
+### Feed gallery
+
+On the Instagram home page (`https://www.instagram.com/`), while viewing a photo or a carousel with the magnifying glass, two buttons appear:
+
+- **View user images in gallery mode**: opens the post author's gallery, starting from the image you are viewing. It is the same gallery that opens from the user's profile.
+- **View feed in gallery mode**: goes through the photos that are part of your feed. More posts keep loading as you move forward, just like when scrolling the page.
 
 It works only with photos (both from the main feed and from each user's profile), but not with videos or reels.
 

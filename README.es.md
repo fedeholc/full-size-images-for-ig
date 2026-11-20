@@ -1,4 +1,4 @@
-# Full Size Images for IG v0.3.0
+# Full Size Images for IG v0.4.0
 
 [![en](https://img.shields.io/badge/lang-en-red.svg)](https://github.com/fedeholc/full-size-insta-extension/blob/master/README.md)
 
@@ -30,7 +30,16 @@ Al entrar al perfil de un usuario (por ejemplo `https://www.instagram.com/rafaba
 
 A medida que te acercas al final se van cargando automáticamente más fotos. Para no esperar al llegar a un carrusel, la extensión precarga en segundo plano los próximos carruseles (y deja sus imágenes en la caché del navegador) antes de que llegues. Si Instagram no expone los datos completos de un perfil, la galería usa las fotos disponibles en la grilla del perfil y sigue cargando más scrolleando el perfil por detrás (al cerrar la galería se restaura la posición del scroll). Cuando un carrusel aparece en la grilla solo con su portada, la extensión abre el post por detrás (oculto detrás del visor) para obtener el resto de sus imágenes.
 
-Cuando estás viendo una foto o un carrusel de forma individual (con la lupa) y llegas a su última imagen, aparece un botón **Continue in gallery mode**. Cambia a la galería completa del autor comenzando por la imagen que estabas viendo, en lugar de arrancar desde el principio.
+Cuando estás viendo una foto o un carrusel de forma individual (con la lupa) y llegas a su última imagen, aparece un botón **Continue in gallery mode**. Cambia a la galería completa del autor comenzando por la imagen que estabas viendo, en lugar de arrancar desde el principio. Funciona igual si la imagen se abrió desde un perfil o desde el feed.
+
+Si Instagram no expone los datos del perfil, la extensión abre el perfil del autor por detrás del visor y usa su grilla para cargar la galería; al cerrarla vuelve automáticamente a la página donde estabas.
+
+### Galería del feed
+
+En la página principal de Instagram (`https://www.instagram.com/`), mientras ves una foto o un carrusel con la lupa aparecen dos botones:
+
+- **View user images in gallery mode**: abre la galería del autor del post, empezando por la imagen que estás viendo. Es la misma galería que se abre desde el perfil del usuario.
+- **View feed in gallery mode**: recorre las fotos que forman parte de tu feed. A medida que avanzas se van cargando más posts, igual que al scrollear la página.
 
 Sólo funciona con fotos (tanto del feed principal como del perfil de cada usuario), pero no con vídeos o reels.
 
